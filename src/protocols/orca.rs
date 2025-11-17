@@ -11,6 +11,7 @@ const DISC: usize = 8;
 /// Field order matches the on-chain Anchor struct exactly.
 /// Reference: https://github.com/orca-so/whirlpools/blob/main/programs/whirlpool/src/state/whirlpool.rs
 #[derive(BorshDeserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct WhirlpoolPool {
     pub whirlpools_config: Pubkey,
     pub whirlpool_bump: [u8; 1],
@@ -35,6 +36,7 @@ pub struct WhirlpoolPool {
 
 /// Key fields of an Orca Whirlpool position account.
 #[derive(BorshDeserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct WhirlpoolPosition {
     pub whirlpool: Pubkey,
     pub position_mint: Pubkey,
