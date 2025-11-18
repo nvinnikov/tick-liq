@@ -1,0 +1,39 @@
+[package]
+name = "tick-liq"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lp-inspect"
+path = "src/main.rs"
+
+[dependencies]
+# Solana
+solana-client = "1.18"
+solana-sdk = "1.18"
+
+# Orca math
+orca_whirlpools_core = "2"
+
+# Serialization
+borsh = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+anyhow = "1"
+
+# Time (for watch command)
+chrono = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
