@@ -2,24 +2,30 @@
 #[derive(Debug, Clone)]
 pub struct PnlResult {
     pub fees_usd: f64,
-    pub il_usd: f64,       // always <= 0
+    pub il_usd: f64, // always <= 0
     pub net_usd: f64,
     pub initial_value_usd: f64,
 }
 
 impl PnlResult {
     pub fn fees_pct(&self) -> f64 {
-        if self.initial_value_usd == 0.0 { return 0.0; }
+        if self.initial_value_usd == 0.0 {
+            return 0.0;
+        }
         self.fees_usd / self.initial_value_usd * 100.0
     }
 
     pub fn il_pct(&self) -> f64 {
-        if self.initial_value_usd == 0.0 { return 0.0; }
+        if self.initial_value_usd == 0.0 {
+            return 0.0;
+        }
         self.il_usd / self.initial_value_usd * 100.0
     }
 
     pub fn net_pct(&self) -> f64 {
-        if self.initial_value_usd == 0.0 { return 0.0; }
+        if self.initial_value_usd == 0.0 {
+            return 0.0;
+        }
         self.net_usd / self.initial_value_usd * 100.0
     }
 }
@@ -29,13 +35,10 @@ impl PnlResult {
 /// Uses the standard concentrated liquidity IL formula.
 /// Clamps prices to range boundaries before computing.
 /// Returns 0.0 if entry price is 0 (unknown).
-pub fn compute_il(
-    price_entry: f64,
-    price_current: f64,
-    price_lower: f64,
-    price_upper: f64,
-) -> f64 {
-    if price_entry == 0.0 { return 0.0; }
+pub fn compute_il(price_entry: f64, price_current: f64, price_lower: f64, price_upper: f64) -> f64 {
+    if price_entry == 0.0 {
+        return 0.0;
+    }
 
     let pa = price_lower.sqrt();
     let pb = price_upper.sqrt();
@@ -46,7 +49,7 @@ pub fn compute_il(
     // V_lp / V_hodl = 2*sqrt(ratio) / (1 + ratio)
     let lp_relative = 2.0 * ratio.sqrt() / (1.0 + ratio);
 
-    lp_relative - 1.0  // always <= 0
+    lp_relative - 1.0 // always <= 0
 }
 
 /// Compute fees accrued since last on-chain checkpoint (not yet in fee_owed).
@@ -86,7 +89,11 @@ mod tests {
     #[test]
     fn test_il_zero_at_entry_price() {
         let il = compute_il(100.0, 100.0, 80.0, 120.0);
-        assert!(il.abs() < 1e-10, "IL at entry price should be ~0, got {}", il);
+        assert!(
+            il.abs() < 1e-10,
+            "IL at entry price should be ~0, got {}",
+            il
+        );
     }
 
     #[test]

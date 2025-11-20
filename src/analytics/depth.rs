@@ -35,9 +35,8 @@ pub fn build_distribution(
     let mut running: i128 = 0;
 
     for i in 0..=(n_buckets_each_side * 2) {
-        let bucket_start = current_tick
-            - (n_buckets_each_side as i32) * tick_spacing
-            + i as i32 * tick_spacing;
+        let bucket_start =
+            current_tick - (n_buckets_each_side as i32) * tick_spacing + i as i32 * tick_spacing;
         let bucket_end = bucket_start + tick_spacing;
 
         let delta: i64 = tick_liquidities
@@ -83,7 +82,11 @@ pub fn estimate_impact(
     let amount_a = l * (1.0 / sqrt_p - 1.0 / sqrt_target).abs();
     let usd_needed = amount_a * current_price;
 
-    PriceImpact { target_pct, target_price, usd_needed }
+    PriceImpact {
+        target_pct,
+        target_price,
+        usd_needed,
+    }
 }
 
 #[cfg(test)]

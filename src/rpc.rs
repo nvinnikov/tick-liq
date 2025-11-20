@@ -19,7 +19,8 @@ impl SolanaRpc {
         let pubkey = Pubkey::from_str(address)
             .map_err(|e| anyhow!("Invalid address '{}': {}", address, e))?;
 
-        let account = self.client
+        let account = self
+            .client
             .get_account(&pubkey)
             .map_err(|e| anyhow!("Account '{}' not found: {}", address, e))?;
 
@@ -32,7 +33,8 @@ impl SolanaRpc {
         let pubkey = Pubkey::from_str(address)
             .map_err(|e| anyhow!("Invalid address '{}': {}", address, e))?;
 
-        let account = self.client
+        let account = self
+            .client
             .get_account(&pubkey)
             .map_err(|e| anyhow!("Account '{}' not found: {}", address, e))?;
 
