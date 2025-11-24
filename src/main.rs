@@ -4,6 +4,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 mod analytics;
+mod data;
 mod display;
 mod protocols;
 mod rpc;
@@ -186,9 +187,6 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Watch { mint } => {
-            use futures_util::{SinkExt, StreamExt};
-            use tokio_tungstenite::connect_async;
-
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -210,34 +208,19 @@ async fn main() -> Result<()> {
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
 
-            let (mut ws, _) = connect_async(&ws_url)
-                .await
-                .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
+            let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
-            let subscribe = serde_json::json!({
-                "jsonrpc": "2.0", "id": 1,
-                "method": "accountSubscribe",
-                "params": [pool_addr, {"encoding": "base64", "commitment": "confirmed"}]
-            });
-            ws.send(tokio_tungstenite::tungstenite::Message::Text(
-                subscribe.to_string(),
-            ))
-            .await?;
-
-            println!("Subscribed. Waiting for updates...\n");
-
-            while let Some(msg) = ws.next().await {
-                let text = match msg? {
-                    tokio_tungstenite::tungstenite::Message::Text(t) => t,
-                    _ => continue,
-                };
-
-                let json: serde_json::Value = serde_json::from_str(&text)?;
-                if json["method"] != "accountNotification" {
-                    continue;
+            // Graceful shutdown on Ctrl+C.
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    let _ = shutdown_tx.send(());
                 }
+            });
 
-                // Clear terminal and reprint
+            let pool_addr_clone = pool_addr.clone();
+            let rpc_url = cli.rpc_url.clone();
+            let on_notify = Box::new(move |_json: serde_json::Value| {
+                let rpc_inner = rpc::SolanaRpc::new(&rpc_url);
                 print!("\x1B[2J\x1B[1;1H");
                 println!(
                     "[{}] Pool update received",
@@ -245,26 +228,35 @@ async fn main() -> Result<()> {
                 );
                 println!();
 
-                let pool_data = rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
-                let pool = protocols::orca::parse_pool(&pool_data)?;
+                let pool_data = match rpc_inner
+                    .fetch_account_checked(&pool_addr_clone, &whirlpool_program)
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch pool data: {}", e);
+                        return;
+                    }
+                };
+                let pool = match protocols::orca::parse_pool(&pool_data) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse pool: {}", e);
+                        return;
+                    }
+                };
 
                 let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
-                println!("Pool:     {}", pool_addr);
-                println!("Price:    ${:.4}", price_current);
-                println!("Tick:     {}", pool.tick_current_index);
-                println!(
-                    "In range: {}",
-                    if in_range {
-                        "YES"
-                    } else {
-                        "NO -- needs rebalance"
-                    }
-                );
+                println!("Pool:      {}", pool_addr_clone);
+                println!("Price:     ${:.4}", price_current);
+                println!("Tick:      {}", pool.tick_current_index);
+                println!("In range:  {}", if in_range { "YES" } else { "NO -- needs rebalance" });
                 println!("Liquidity: {}", pool.liquidity);
-            }
+            });
+
+            data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
         }
         Commands::Depth { pool } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
