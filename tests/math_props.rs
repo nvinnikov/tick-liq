@@ -12,13 +12,16 @@
 #[path = "../src/analytics/amounts.rs"]
 mod amounts;
 
-#[path = "../src/analytics/pnl.rs"]
+#[path = "../src/math/il.rs"]
 mod pnl;
 
-#[path = "../src/analytics/greeks.rs"]
-mod greeks;
+#[path = "../src/math/greeks.rs"]
+mod greeks_math;
 
-#[path = "../src/analytics/depth.rs"]
+#[path = "../src/math/sqrt_price.rs"]
+mod sqrt_price;
+
+#[path = "../src/math/impact.rs"]
 mod depth;
 
 use orca_whirlpools_core::tick_index_to_sqrt_price;
@@ -26,8 +29,9 @@ use proptest::prelude::*;
 
 use amounts::compute_token_amounts;
 use depth::estimate_impact;
-use greeks::compute_greeks;
+use greeks_math::compute_greeks_from_prices;
 use pnl::compute_il;
+use sqrt_price::sqrt_q64_to_price;
 
 // Orca tick range constants. The full SDK range is roughly [-443636, 443636].
 // We use a tighter range to keep token-amount math from overflowing u64
@@ -154,8 +158,10 @@ proptest! {
         prop_assume!(tu - tl >= 2);
         let tc = tl + (tu - tl) / 2; // midpoint, guaranteed strictly inside
         prop_assume!(tc > tl && tc < tu);
-        let sqrt_price_q64 = tick_index_to_sqrt_price(tc);
-        let g = compute_greeks(liq, sqrt_price_q64, tl, tu);
+        let price = sqrt_q64_to_price(tick_index_to_sqrt_price(tc));
+        let price_lower = sqrt_q64_to_price(tick_index_to_sqrt_price(tl));
+        let price_upper = sqrt_q64_to_price(tick_index_to_sqrt_price(tu));
+        let g = compute_greeks_from_prices(liq, price, price_lower, price_upper);
         prop_assert!(g.delta <= EPS, "delta must be <= 0 in range, got {}", g.delta);
     }
 
