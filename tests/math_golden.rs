@@ -10,25 +10,33 @@
 
 #![allow(dead_code)]
 
+// analytics/amounts.rs is self-contained (uses orca_whirlpools_core directly).
 #[path = "../src/analytics/amounts.rs"]
 mod amounts;
 
-#[path = "../src/analytics/pnl.rs"]
-mod pnl;
+// math modules are pure — include directly to avoid crate:: resolution issues.
+#[path = "../src/math/il.rs"]
+mod math_il;
 
-#[path = "../src/analytics/greeks.rs"]
-mod greeks;
+#[path = "../src/math/sqrt_price.rs"]
+mod math_sqrt_price;
 
-#[path = "../src/analytics/depth.rs"]
-mod depth;
+#[path = "../src/math/greeks.rs"]
+mod math_greeks;
 
 use orca_whirlpools_core::tick_index_to_sqrt_price;
 use serde::Deserialize;
 use std::path::PathBuf;
 
 use amounts::compute_token_amounts;
-use greeks::compute_greeks;
-use pnl::compute_il;
+use math_il::compute_il;
+
+fn compute_greeks(liquidity: u128, sqrt_price_q64: u128, tick_lower: i32, tick_upper: i32) -> math_greeks::Greeks {
+    let price = math_sqrt_price::sqrt_q64_to_price(sqrt_price_q64);
+    let price_lower = math_sqrt_price::sqrt_q64_to_price(tick_index_to_sqrt_price(tick_lower));
+    let price_upper = math_sqrt_price::sqrt_q64_to_price(tick_index_to_sqrt_price(tick_upper));
+    math_greeks::compute_greeks_from_prices(liquidity, price, price_lower, price_upper)
+}
 
 #[derive(Debug, Deserialize)]
 struct Fixtures {
