@@ -6,6 +6,7 @@ use std::str::FromStr;
 mod analytics;
 mod data;
 mod display;
+mod execution;
 mod math;
 mod protocols;
 mod rpc;
@@ -71,6 +72,14 @@ enum Commands {
     Db {
         #[command(subcommand)]
         action: DbAction,
+    },
+    /// Build (but do not send) a rebalance plan for a position
+    Rebalance {
+        /// Position NFT mint address
+        mint: String,
+        /// Preview only; sending is not yet supported
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -540,6 +549,45 @@ async fn main() -> Result<()> {
                 println!("Migrations complete");
             }
         },
+        Commands::Rebalance { mint, dry_run } => {
+            if !*dry_run {
+                anyhow::bail!("Only --dry-run is supported");
+            }
+            let keypair_b58 = std::env::var("LP_INSPECTOR_KEYPAIR").map_err(|_| {
+                anyhow::anyhow!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                )
+            })?;
+            if keypair_b58.trim().is_empty() {
+                anyhow::bail!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                );
+            }
+
+            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+            let mint_pubkey = Pubkey::from_str(mint)?;
+            let (position_pda, _) = Pubkey::find_program_address(
+                &[b"position", mint_pubkey.as_ref()],
+                &whirlpool_program,
+            );
+
+            let position_data =
+                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
+            let pos = protocols::orca::parse_position(&position_data)?;
+
+            let pool_data =
+                rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
+            let pool = protocols::orca::parse_pool(&pool_data)?;
+
+            let plan = execution::build_rebalance_plan(
+                mint,
+                pos.tick_lower_index,
+                pos.tick_upper_index,
+                pool.tick_spacing as i32,
+            );
+            execution::print_dry_run(&plan);
+        }
     }
 
     Ok(())
