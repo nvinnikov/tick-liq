@@ -81,6 +81,14 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Build (but do not send) a Drift perp hedge plan for a position
+    Hedge {
+        /// Position NFT mint address
+        mint: String,
+        /// Preview only; sending is not yet supported
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -587,6 +595,49 @@ async fn main() -> Result<()> {
                 pool.tick_spacing as i32,
             );
             execution::print_dry_run(&plan);
+        }
+        Commands::Hedge { mint, dry_run } => {
+            if !*dry_run {
+                anyhow::bail!("Only --dry-run is supported");
+            }
+            let keypair_b58 = std::env::var("LP_INSPECTOR_KEYPAIR").map_err(|_| {
+                anyhow::anyhow!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                )
+            })?;
+            if keypair_b58.trim().is_empty() {
+                anyhow::bail!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                );
+            }
+
+            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+            let mint_pubkey = Pubkey::from_str(mint)?;
+            let (position_pda, _) = Pubkey::find_program_address(
+                &[b"position", mint_pubkey.as_ref()],
+                &whirlpool_program,
+            );
+
+            let position_data =
+                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
+            let pos = protocols::orca::parse_position(&position_data)?;
+
+            let pool_data =
+                rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
+            let pool = protocols::orca::parse_pool(&pool_data)?;
+
+            let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
+            let greeks = analytics::greeks::compute_greeks(
+                pos.liquidity,
+                pool.sqrt_price,
+                pos.tick_lower_index,
+                pos.tick_upper_index,
+            );
+
+            let mut plan = execution::compute_hedge_size(greeks.delta, price_current);
+            plan.position_mint = mint.clone();
+            execution::print_hedge_dry_run(&plan);
         }
     }
 
