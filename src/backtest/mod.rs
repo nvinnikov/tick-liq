@@ -240,6 +240,276 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
     }
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn base_params() -> BacktestParams {
+        BacktestParams {
+            entry_price: 100.0,
+            price_lower: 90.0,
+            price_upper: 110.0,
+            fee_rate_bps: 5.0,
+            initial_value_usd: 10_000.0,
+            days: 30,
+            annual_volatility: 0.80,
+            daily_volume_usd: 1_000_000.0,
+            position_volume_share: 0.05,
+            tick_spacing: 64,
+            strategy_rebalance: false,
+        }
+    }
+
+    // ── Determinism ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_is_deterministic() {
+        let params = base_params();
+        let r1 = run(&params, 42);
+        let r2 = run(&params, 42);
+        assert_eq!(r1.total_fees_usd, r2.total_fees_usd);
+        assert_eq!(r1.total_il_usd, r2.total_il_usd);
+        assert_eq!(r1.days_in_range, r2.days_in_range);
+        assert_eq!(r1.net_pnl_usd, r2.net_pnl_usd);
+    }
+
+    #[test]
+    fn different_seeds_produce_different_paths() {
+        let params = base_params();
+        let r1 = run(&params, 1);
+        let r2 = run(&params, 2);
+        // Two 30-day paths at 80% vol will virtually always diverge.
+        assert_ne!(r1.net_pnl_usd, r2.net_pnl_usd, "distinct seeds should yield distinct paths");
+    }
+
+    // ── Zero-volatility invariants ────────────────────────────────────────────
+
+    #[test]
+    fn zero_volatility_price_stays_at_entry() {
+        let mut params = base_params();
+        params.annual_volatility = 0.0;
+        let result = run(&params, 0);
+        for day in &result.days {
+            // With σ=0: drift = 0, vol_step = 0 → price = entry * exp(0) = entry
+            assert!(
+                (day.price - params.entry_price).abs() < 1e-6,
+                "day {}: price {} should equal entry {}",
+                day.day,
+                day.price,
+                params.entry_price,
+            );
+        }
+    }
+
+    #[test]
+    fn zero_volatility_all_days_in_range() {
+        let mut params = base_params();
+        params.annual_volatility = 0.0;
+        let result = run(&params, 0);
+        assert_eq!(result.days_in_range, params.days, "all days should be in range with zero vol");
+    }
+
+    #[test]
+    fn zero_volatility_fees_monotone() {
+        let mut params = base_params();
+        params.annual_volatility = 0.0;
+        let result = run(&params, 0);
+        for w in result.days.windows(2) {
+            assert!(
+                w[1].cumulative_fees_usd >= w[0].cumulative_fees_usd,
+                "cumulative fees must not decrease"
+            );
+        }
+    }
+
+    // ── Accounting identities ─────────────────────────────────────────────────
+
+    #[test]
+    fn net_pnl_equals_fees_plus_il_each_day() {
+        let params = base_params();
+        let result = run(&params, 42);
+        for day in &result.days {
+            let expected = day.cumulative_fees_usd + day.il_usd;
+            assert!(
+                (day.net_pnl_usd - expected).abs() < 1e-9,
+                "day {}: net_pnl_usd ({}) ≠ fees + il ({})",
+                day.day,
+                day.net_pnl_usd,
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn total_fees_matches_last_day_cumulative() {
+        let params = base_params();
+        let result = run(&params, 42);
+        if let Some(last) = result.days.last() {
+            assert_eq!(result.total_fees_usd, last.cumulative_fees_usd);
+        }
+    }
+
+    // ── Structural invariants ─────────────────────────────────────────────────
+
+    #[test]
+    fn correct_number_of_day_snapshots() {
+        let params = base_params();
+        let result = run(&params, 0);
+        assert_eq!(result.days.len(), params.days as usize);
+        assert_eq!(result.days.first().map(|d| d.day), Some(1));
+        assert_eq!(result.days.last().map(|d| d.day), Some(params.days));
+    }
+
+    #[test]
+    fn zero_days_returns_empty_result() {
+        let mut params = base_params();
+        params.days = 0;
+        let result = run(&params, 0);
+        assert!(result.days.is_empty());
+        assert_eq!(result.total_fees_usd, 0.0);
+        assert_eq!(result.fee_apy_pct, 0.0);
+        assert_eq!(result.days_in_range, 0);
+    }
+
+    #[test]
+    fn days_in_range_bounded_by_total_days() {
+        let params = base_params();
+        let result = run(&params, 42);
+        assert!(result.days_in_range <= params.days);
+    }
+
+    // ── Fee APY formula ───────────────────────────────────────────────────────
+
+    #[test]
+    fn fee_apy_correct_for_all_in_range_one_year() {
+        let mut params = base_params();
+        params.annual_volatility = 0.0; // price fixed at entry → always in range
+        params.days = 365;
+        let result = run(&params, 0);
+
+        // daily_fee = volume * share * rate = 1_000_000 * 0.05 * (5/10_000) = 25.0
+        let daily_fee =
+            params.daily_volume_usd * params.position_volume_share * params.fee_rate_bps / 10_000.0;
+        let expected_total = daily_fee * 365.0;
+        let expected_apy = (expected_total / params.initial_value_usd) * 100.0; // 91.25 %
+
+        assert!(
+            (result.fee_apy_pct - expected_apy).abs() < 0.01,
+            "expected APY ≈{:.2}%, got {:.2}%",
+            expected_apy,
+            result.fee_apy_pct,
+        );
+    }
+
+    // ── Rebalance ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rebalance_count_bounded_by_total_days() {
+        let mut params = base_params();
+        params.strategy_rebalance = true;
+        params.annual_volatility = 5.0; // extreme vol → many out-of-range events
+        params.days = 60;
+        let result = run(&params, 7);
+        assert!(
+            result.total_rebalances <= result.days.len() as u32,
+            "cannot rebalance more than once per simulated day"
+        );
+    }
+
+    #[test]
+    fn no_rebalances_without_strategy_flag() {
+        let mut params = base_params();
+        params.strategy_rebalance = false;
+        params.annual_volatility = 5.0; // would trigger rebalances if enabled
+        let result = run(&params, 7);
+        assert_eq!(result.total_rebalances, 0);
+    }
+
+    // ── price_to_tick ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn price_to_tick_at_price_one() {
+        // ln(1.0) = 0 → tick = 0 regardless of tick_spacing
+        assert_eq!(price_to_tick(1.0, 1), 0);
+        assert_eq!(price_to_tick(1.0, 64), 0);
+    }
+
+    #[test]
+    fn price_to_tick_is_monotone() {
+        let prices = [0.001_f64, 0.1, 1.0, 10.0, 1_000.0, 100_000.0];
+        let ticks: Vec<i32> = prices.iter().map(|&p| price_to_tick(p, 1)).collect();
+        for w in ticks.windows(2) {
+            assert!(w[1] >= w[0], "ticks must be non-decreasing with price: {:?}", ticks);
+        }
+    }
+
+    #[test]
+    fn price_to_tick_aligned_to_spacing() {
+        for spacing in [1, 8, 64] {
+            for price in [0.5_f64, 1.0, 2.0, 100.0, 10_000.0] {
+                let tick = price_to_tick(price, spacing);
+                assert_eq!(
+                    tick % spacing,
+                    0,
+                    "tick {} not aligned to spacing {} for price {}",
+                    tick,
+                    spacing,
+                    price,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn price_to_tick_below_one_is_negative() {
+        let tick = price_to_tick(0.5, 1);
+        assert!(tick < 0, "price below 1.0 should map to negative tick, got {}", tick);
+    }
+
+    // ── Proptest invariants ───────────────────────────────────────────────────
+
+    proptest! {
+        #[test]
+        fn prop_days_in_range_leq_total_days(seed: u64, days in 1u32..=90u32) {
+            let mut params = base_params();
+            params.days = days;
+            let result = run(&params, seed);
+            prop_assert!(result.days_in_range <= days);
+        }
+
+        #[test]
+        fn prop_cumulative_fees_nonnegative(seed: u64, days in 1u32..=90u32) {
+            let mut params = base_params();
+            params.days = days;
+            let result = run(&params, seed);
+            for day in &result.days {
+                prop_assert!(day.cumulative_fees_usd >= 0.0);
+            }
+        }
+
+        #[test]
+        fn prop_net_pnl_equals_fees_plus_il(seed: u64, days in 1u32..=30u32) {
+            let mut params = base_params();
+            params.days = days;
+            let result = run(&params, seed);
+            for day in &result.days {
+                let expected = day.cumulative_fees_usd + day.il_usd;
+                prop_assert!((day.net_pnl_usd - expected).abs() < 1e-6);
+            }
+        }
+
+        #[test]
+        fn prop_price_to_tick_spacing_aligned(price_exp in -4i32..=5i32, spacing in prop::sample::select(vec![1i32, 8, 64])) {
+            let price = 10.0_f64.powi(price_exp);
+            let tick = price_to_tick(price, spacing);
+            prop_assert_eq!(tick % spacing, 0, "tick {} not aligned to spacing {}", tick, spacing);
+        }
+    }
+}
+
 // ── Display ───────────────────────────────────────────────────────────────────
 
 pub fn print_results(result: &BacktestResult) {
