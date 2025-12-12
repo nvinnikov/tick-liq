@@ -72,6 +72,11 @@ impl PositionsRepo {
     }
 
     /// Append a P&L snapshot to `pnl_history` for the given position mint.
+    ///
+    /// TODO: Legacy signature kept for back-compat with callers that predate the
+    /// PERSIST-02 schema update (fees_usd→fees_earned, net_usd→net_pnl, +pool_address,
+    /// +position_value). New code should use `storage::writer::write_pnl_snapshot`
+    /// and `storage::writer::spawn_pnl_write` instead.
     pub async fn record_pnl(
         &self,
         mint: &str,
@@ -83,13 +88,16 @@ impl PositionsRepo {
         self.pool
             .execute(
                 query(
-                    "INSERT INTO pnl_history (time, mint, fees_usd, il_usd, net_usd, price) \
-                     VALUES (NOW(), $1, $2, $3, $4, $5)",
+                    "INSERT INTO pnl_history \
+                     (time, mint, pool_address, fees_earned, il_usd, net_pnl, position_value, price) \
+                     VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7)",
                 )
                 .bind(mint)
-                .bind(fees_usd)
+                .bind("")          // pool_address: unknown at legacy call sites
+                .bind(fees_usd)    // fees_earned
                 .bind(il_usd)
-                .bind(net_usd)
+                .bind(net_usd)     // net_pnl
+                .bind(0.0_f64)     // position_value: unknown at legacy call sites
                 .bind(price),
             )
             .await

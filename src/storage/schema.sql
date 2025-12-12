@@ -29,9 +29,11 @@ CREATE TABLE IF NOT EXISTS pool_ticks (
 CREATE TABLE IF NOT EXISTS pnl_history (
     time TIMESTAMPTZ NOT NULL,
     mint TEXT NOT NULL,
-    fees_usd DOUBLE PRECISION NOT NULL,
+    pool_address TEXT NOT NULL,
+    fees_earned DOUBLE PRECISION NOT NULL,
     il_usd DOUBLE PRECISION NOT NULL,
-    net_usd DOUBLE PRECISION NOT NULL,
+    net_pnl DOUBLE PRECISION NOT NULL,
+    position_value DOUBLE PRECISION NOT NULL,
     price DOUBLE PRECISION NOT NULL
 );
 -- SELECT create_hypertable('pnl_history', 'time', if_not_exists => TRUE);
