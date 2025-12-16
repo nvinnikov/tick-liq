@@ -72,6 +72,10 @@ impl PositionsRepo {
     }
 
     /// Append a P&L snapshot to `pnl_history` for the given position mint.
+    ///
+    /// NOTE: The schema was updated in plan 01-02 to rename fees_usd→fees_earned,
+    /// net_usd→net_pnl and add pool_address + position_value columns. This legacy
+    /// signature is kept for back-compat; the watch loop uses storage::writer instead.
     pub async fn record_pnl(
         &self,
         mint: &str,
@@ -83,8 +87,9 @@ impl PositionsRepo {
         self.pool
             .execute(
                 query(
-                    "INSERT INTO pnl_history (time, mint, fees_usd, il_usd, net_usd, price) \
-                     VALUES (NOW(), $1, $2, $3, $4, $5)",
+                    "INSERT INTO pnl_history \
+                     (time, mint, pool_address, fees_earned, il_usd, net_pnl, position_value, price) \
+                     VALUES (NOW(), $1, '', $2, $3, $4, 0.0, $5)",
                 )
                 .bind(mint)
                 .bind(fees_usd)

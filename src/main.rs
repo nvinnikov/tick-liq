@@ -419,6 +419,23 @@ async fn main() -> Result<()> {
                 .replace("https://", "wss://")
                 .replace("http://", "ws://");
 
+            // Connect to Postgres if DATABASE_URL is configured; otherwise run
+            // without persistence (preserves dev UX when no DB is available).
+            let db_pool: Option<sqlx_postgres::PgPool> = match cli.db_url.as_deref() {
+                Some(url) => {
+                    let pg = storage::connect(url).await?;
+                    storage::run_migrations(&pg).await?;
+                    tracing::info!("Storage connected — persisting tick snapshots to Postgres");
+                    Some(pg)
+                }
+                None => {
+                    tracing::warn!(
+                        "DATABASE_URL not set — running watch without persistence"
+                    );
+                    None
+                }
+            };
+
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
 
@@ -434,7 +451,8 @@ async fn main() -> Result<()> {
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
-            let on_notify = Box::new(move |_json: serde_json::Value| {
+            let mint_str = mint.clone();
+            let on_notify = Box::new(move |json: serde_json::Value| {
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
                 print!("\x1B[2J\x1B[1;1H");
                 println!(
@@ -475,6 +493,54 @@ async fn main() -> Result<()> {
                     }
                 );
                 println!("Liquidity: {}", pool.liquidity);
+
+                // Persist tick snapshot if DB is configured.
+                if let Some(ref pg) = db_pool {
+                    // Extract Solana slot from the accountNotification context.
+                    // Shape: {"params":{"result":{"context":{"slot": N},...},...},...}
+                    let slot: i64 = json
+                        .pointer("/params/result/context/slot")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+
+                    let now = chrono::Utc::now();
+
+                    let tick = storage::writer::PoolTick {
+                        pool_address: pool_addr_clone.clone(),
+                        slot,
+                        tick_current: pool.tick_current_index,
+                        sqrt_price: pool.sqrt_price,
+                        liquidity: pool.liquidity,
+                        fee_growth_global_a: pool.fee_growth_global_a,
+                        fee_growth_global_b: pool.fee_growth_global_b,
+                        observed_at: now,
+                    };
+
+                    // Await write_pool_tick (durability checkpoint). The callback
+                    // runs inside a tokio runtime; block_in_place lets us call
+                    // block_on without violating single-threaded executor rules.
+                    let write_result =
+                        tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(storage::writer::write_pool_tick(pg, &tick))
+                        });
+                    if let Err(e) = write_result {
+                        tracing::warn!(error = %e, "pool_ticks write failed");
+                    }
+
+                    let snap = storage::writer::PnlSnapshot {
+                        mint: mint_str.clone(),
+                        pool_address: pool_addr_clone.clone(),
+                        fees_earned: 0.0, // TODO(phase-2): compute from position fee accrual
+                        il_usd: 0.0,      // TODO(phase-2): compute from IL formula
+                        net_pnl: 0.0,     // TODO(phase-2): fees_earned + il_usd
+                        position_value: 0.0, // TODO(phase-2): amounts * price
+                        price: price_current,
+                        observed_at: now,
+                    };
+                    // Fire-and-forget: does not block tick processing (PERSIST-03).
+                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap));
+                }
             });
 
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
