@@ -1,5 +1,5 @@
 // Async writer for pool_ticks snapshots received from WebSocket.
-// Not yet wired to the watch loop — ready for shadow mode integration.
+// Wired into the watch loop in plan 01-03 — ready for shadow mode integration.
 
 #![allow(dead_code)]
 
