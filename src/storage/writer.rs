@@ -116,6 +116,70 @@ pub fn spawn_pnl_write(pool: PgPool, snap: PnlSnapshot) -> JoinHandle<()> {
     })
 }
 
+/// A shadow rebalance decision row written on every rebalance trigger (SHADOW-02).
+///
+/// `error_flag = true` captures any `anyhow::Error` from the decision path so the
+/// Plan 03 gate query can detect bad runs (T-02-05).
+#[derive(Debug, Clone)]
+pub struct ShadowRebalanceRow {
+    pub pool_address: String,
+    /// 'out_of_range' | 'near_lower_edge' | 'near_upper_edge' | 'il_threshold' | 'manual' | 'error'
+    pub trigger_reason: String,
+    pub price: f64,
+    pub simulated_range_width: Option<f64>,
+    pub simulated_fees_earned: Option<f64>,
+    pub simulated_il_usd: Option<f64>,
+    pub simulated_net_pnl: Option<f64>,
+    pub error_flag: bool,
+    pub error_message: Option<String>,
+}
+
+/// Insert one `ShadowRebalanceRow` into `shadow_rebalances`.
+///
+/// All values are bound as parameters — no string interpolation — satisfying SQL
+/// injection requirements. The `created_at` timestamp is generated server-side via
+/// `DEFAULT NOW()` (T-02-04: no client-supplied id or timestamp).
+pub async fn write_shadow_rebalance(pool: &PgPool, row: &ShadowRebalanceRow) -> Result<()> {
+    pool.execute(
+        query(
+            "INSERT INTO shadow_rebalances \
+             (pool_address, trigger_reason, price, \
+              simulated_range_width, simulated_fees_earned, \
+              simulated_il_usd, simulated_net_pnl, \
+              error_flag, error_message) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        )
+        .bind(&row.pool_address)
+        .bind(&row.trigger_reason)
+        .bind(row.price)
+        .bind(row.simulated_range_width)
+        .bind(row.simulated_fees_earned)
+        .bind(row.simulated_il_usd)
+        .bind(row.simulated_net_pnl)
+        .bind(row.error_flag)
+        .bind(row.error_message.as_deref()),
+    )
+    .await
+    .context("write_shadow_rebalance failed")?;
+    Ok(())
+}
+
+/// Fire-and-forget variant of `write_shadow_rebalance`, mirroring `spawn_pnl_write`.
+///
+/// Spawns a Tokio task immediately — caller is never blocked by DB I/O.
+/// Errors are logged via `tracing::error!` with pool address for traceability.
+pub fn spawn_shadow_write(pool: PgPool, row: ShadowRebalanceRow) {
+    tokio::spawn(async move {
+        if let Err(e) = write_shadow_rebalance(&pool, &row).await {
+            tracing::error!(
+                error = %e,
+                pool = %row.pool_address,
+                "failed to write shadow_rebalances row"
+            );
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
