@@ -512,10 +512,82 @@ async fn main() -> Result<()> {
                 );
                 println!("Liquidity: {}", pool.liquidity);
 
+                // ── Real P&L computation (SHADOW-03 / Phase 2) ─────────────────
+                // Decimals are not fetched in watch mode; use well-known values for
+                // SOL (9) / USDC (6) as a best-effort approximation (same as Raydium
+                // position command). Full decimal wiring arrives in Phase 5.
+                let scale_a = 10f64.powi(9); // SOL decimals
+                let scale_b = 10f64.powi(6); // USDC decimals
+
+                let accrued_a = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_a,
+                    pos.fee_growth_checkpoint_a,
+                    pos.liquidity,
+                );
+                let accrued_b = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_b,
+                    pos.fee_growth_checkpoint_b,
+                    pos.liquidity,
+                );
+                let computed_fees_earned =
+                    (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
+                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+
+                // Use cached entry price when available; fall back to current price
+                // which yields IL = 0 (conservative — avoids spurious error rows).
+                let entry_price = cache::load_entry_price(&mint_str).unwrap_or(price_current);
+
+                let amounts_result = analytics::amounts::compute_token_amounts(
+                    pos.liquidity,
+                    pool.sqrt_price,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                );
+                let computed_position_value = match &amounts_result {
+                    Ok(a) => {
+                        a.amount_a as f64 / scale_a * price_current
+                            + a.amount_b as f64 / scale_b
+                    }
+                    Err(_) => 0.0,
+                };
+
+                let price_lower = analytics::greeks::sqrt_q64_to_price(
+                    orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_lower_index),
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_upper_index),
+                );
+                let il_fraction = analytics::pnl::compute_il(
+                    entry_price,
+                    price_current,
+                    price_lower,
+                    price_upper,
+                );
+                let computed_il_usd = il_fraction * computed_position_value;
+
+                // ── Shadow rebalance decision (SHADOW-02) ───────────────────────
+                // Wrap the full decision path so any error sets error_flag=true rather
+                // than aborting the tick callback (T-02-05).
+                let rebalance_config = strategy::RebalanceConfig::default();
+                let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
+                    strategy::should_rebalance(
+                        pool.tick_current_index,
+                        pos.tick_lower_index,
+                        pos.tick_upper_index,
+                        computed_fees_earned + computed_il_usd,
+                        &rebalance_config,
+                    )
+                );
+
+                let is_rebalance = matches!(
+                    &decision_result,
+                    Ok(strategy::RebalanceDecision::Rebalance { .. })
+                );
+
                 // Gate: if a rebalance plan were to be submitted, check shadow guard first.
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
                 // Real rebalance plan construction arrives in Phase 5.
-                if !in_range {
+                if is_rebalance {
                     let plan_proxy = format!(
                         "rebalance_needed tick={} range=[{},{}]",
                         pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
@@ -525,7 +597,70 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Persist tick snapshot if DB is configured.
+                // Build and spawn the shadow_rebalances row when a rebalance decision fires.
+                // We also write on error so the gate query in Plan 03 can count bad rows.
+                if let Some(ref pg) = db_pool {
+                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
+                        match &decision_result {
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
+                                let plan = execution::build_rebalance_plan(
+                                    &mint_str,
+                                    pos.tick_lower_index,
+                                    pos.tick_upper_index,
+                                    pool.tick_spacing as i32,
+                                );
+                                let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                                tracing::info!(
+                                    pool = %pool_addr_clone,
+                                    trigger = %reason,
+                                    price = price_current,
+                                    error = false,
+                                    "shadow rebalance decision"
+                                );
+                                Some(storage::writer::ShadowRebalanceRow {
+                                    pool_address: pool_addr_clone.clone(),
+                                    trigger_reason: reason.replace(' ', "_"),
+                                    price: price_current,
+                                    simulated_range_width: Some(range_width),
+                                    simulated_fees_earned: Some(computed_fees_earned),
+                                    simulated_il_usd: Some(computed_il_usd),
+                                    simulated_net_pnl: Some(
+                                        computed_fees_earned - computed_il_usd.abs(),
+                                    ),
+                                    error_flag: false,
+                                    error_message: None,
+                                })
+                            }
+                            Ok(strategy::RebalanceDecision::Hold { .. }) => {
+                                // No rebalance needed this tick — do not write a row.
+                                None
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    pool = %pool_addr_clone,
+                                    error = %e,
+                                    "shadow rebalance decision error"
+                                );
+                                Some(storage::writer::ShadowRebalanceRow {
+                                    pool_address: pool_addr_clone.clone(),
+                                    trigger_reason: "error".to_string(),
+                                    price: price_current,
+                                    simulated_range_width: None,
+                                    simulated_fees_earned: None,
+                                    simulated_il_usd: None,
+                                    simulated_net_pnl: None,
+                                    error_flag: true,
+                                    error_message: Some(e.clone()),
+                                })
+                            }
+                        };
+
+                    if let Some(row) = shadow_row {
+                        storage::writer::spawn_shadow_write(pg.clone(), row);
+                    }
+                }
+
+                // ── Persist tick snapshot ───────────────────────────────────────
                 if let Some(ref pg) = db_pool {
                     // Extract Solana slot from the accountNotification context.
                     // Shape: {"params":{"result":{"context":{"slot": N},...},...},...}
@@ -562,10 +697,10 @@ async fn main() -> Result<()> {
                     let snap = storage::writer::PnlSnapshot {
                         mint: mint_str.clone(),
                         pool_address: pool_addr_clone.clone(),
-                        fees_earned: 0.0, // TODO(phase-2): compute from position fee accrual
-                        il_usd: 0.0,      // TODO(phase-2): compute from IL formula
-                        net_pnl: 0.0,     // TODO(phase-2): fees_earned + il_usd
-                        position_value: 0.0, // TODO(phase-2): amounts * price
+                        fees_earned: computed_fees_earned,
+                        il_usd: computed_il_usd,
+                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                        position_value: computed_position_value,
                         price: price_current,
                         observed_at: now,
                     };
