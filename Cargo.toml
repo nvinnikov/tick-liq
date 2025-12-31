@@ -49,3 +49,4 @@ sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono
 
 [dev-dependencies]
 proptest = "1"
+uuid = { version = "1", features = ["v4"] }
