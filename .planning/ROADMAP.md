@@ -144,3 +144,14 @@ Plans:
 | 5. Live Execution | 0/4 | Not started | - |
 | 6. Risk Limits | 0/4 | Not started | - |
 | 7. Telegram Bot | 0/4 | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Conduct trader custdev interviews (BACKLOG)
+
+**Goal:** Find 5-10 algo traders, validate FlowSense signal API and tick-liq LP automation pain points
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
