@@ -13,9 +13,6 @@
 //!
 //! This is an intentional, documented approximation (T-03-09 accepted risk).
 
-// Not yet wired to CLI (plan 03-03); suppress dead-code lints until then.
-#![allow(dead_code)]
-
 use anyhow::{bail, Result};
 
 use crate::backtest::{BacktestResult, DayResult, ParamsSnapshot, price_to_tick};
@@ -460,5 +457,173 @@ mod tests {
         let _ = r.days_in_range;
         let _ = r.fee_apy_pct;
         let _ = r.params_snapshot;
+    }
+
+    // ── CLI-level fixture tests: verify DB-mode output on synthetic data ──────
+    //
+    // These tests use hand-crafted PoolTickRow fixtures that represent the same
+    // conditions as a GBM run at zero volatility (price constant at entry,
+    // always in range). They validate that the DB-mode path produces results
+    // consistent with what the GBM simulator would compute for the same inputs.
+
+    /// At zero volatility GBM keeps price fixed at entry; the equivalent DB fixture
+    /// is a series of ticks where sqrt_price = 2^64 (price = 1.0) and
+    /// tick_current = 0 (range [tick(0.90), tick(1.10)] includes 0).
+    ///
+    /// For DB mode the fee source is fee_growth_global_a deltas, so we use
+    /// a large liquidity pool to make the per-tick fee contribution measurable.
+    #[test]
+    fn db_mode_in_range_constant_price_fees_positive() {
+        // price = 1.0 throughout; position is always in range.
+        let sqrt_price_at_1 = 1u128 << 64;
+        // 3 ticks across 2 days; fee_growth_global_a grows by 1_000_000_000 per tick.
+        let fg_step: u128 = 1_000_000_000;
+        let ticks = vec![
+            make_tick(0, 0, sqrt_price_at_1, 10_000, 0),
+            make_tick(43200, 0, sqrt_price_at_1, 10_000, fg_step),       // same day
+            make_tick(86400, 0, sqrt_price_at_1, 10_000, 2 * fg_step),   // day 2
+        ];
+        let input = DbBacktestInput {
+            initial_value_usd: 10_000.0,
+            entry_price: 1.0,
+            price_lower: 0.90,
+            price_upper: 1.10,
+            fee_rate_bps: 5.0,
+            tick_spacing: 64,
+            position_liquidity: 100, // 100/10_000 = 1% of pool
+            rebalance_cfg: RebalanceConfig {
+                rebalance_out_of_range: false,
+                near_edge_ticks: 0,
+                min_net_pnl_usd: 0.0,
+            },
+            range_factor_lower: 0.95,
+            range_factor_upper: 1.05,
+        };
+        let result = run_db_backtest(input, &ticks).unwrap();
+
+        // Price is constant at entry → IL must be exactly 0.
+        assert!(
+            result.total_il_usd.abs() < 1e-9,
+            "constant price → IL must be 0, got {}",
+            result.total_il_usd
+        );
+
+        // Position was always in range → days_in_range == day count.
+        assert_eq!(
+            result.days_in_range,
+            result.days.len() as u32,
+            "all days should be in range"
+        );
+
+        // Fees must be positive (fee_growth_global_a grew).
+        assert!(
+            result.total_fees_usd > 0.0,
+            "fees should be positive when fee_growth_global_a grows"
+        );
+
+        // net_pnl = fees + il = fees (since il = 0).
+        let expected_net = result.total_fees_usd + result.total_il_usd;
+        assert!(
+            (result.net_pnl_usd - expected_net).abs() < 1e-9,
+            "net_pnl_usd must equal fees + il"
+        );
+
+        // No rebalances (price never left range, rebalance disabled).
+        assert_eq!(result.total_rebalances, 0);
+    }
+
+    /// GBM invariant: net_pnl = fees + il must hold at every day snapshot,
+    /// mirroring the same check in `backtest::tests::net_pnl_equals_fees_plus_il_each_day`.
+    #[test]
+    fn db_mode_net_pnl_equals_fees_plus_il_each_day() {
+        let sqrt_price_at_1 = 1u128 << 64;
+        // 4 ticks across 3 distinct days.
+        let ticks = vec![
+            make_tick(0, 0, sqrt_price_at_1, 5_000, 0),
+            make_tick(86400, 0, sqrt_price_at_1, 5_000, 500_000),
+            make_tick(86401, 0, sqrt_price_at_1, 5_000, 500_001),
+            make_tick(172800, 0, sqrt_price_at_1, 5_000, 1_000_000),
+        ];
+        let input = DbBacktestInput {
+            initial_value_usd: 10_000.0,
+            entry_price: 1.0,
+            price_lower: 0.90,
+            price_upper: 1.10,
+            fee_rate_bps: 5.0,
+            tick_spacing: 64,
+            position_liquidity: 50,
+            rebalance_cfg: RebalanceConfig {
+                rebalance_out_of_range: false,
+                near_edge_ticks: 0,
+                min_net_pnl_usd: 0.0,
+            },
+            range_factor_lower: 0.95,
+            range_factor_upper: 1.05,
+        };
+        let result = run_db_backtest(input, &ticks).unwrap();
+
+        for day in &result.days {
+            let expected = day.cumulative_fees_usd + day.il_usd;
+            assert!(
+                (day.net_pnl_usd - expected).abs() < 1e-9,
+                "day {}: net_pnl_usd ({}) ≠ fees_usd ({}) + il_usd ({})",
+                day.day,
+                day.net_pnl_usd,
+                day.cumulative_fees_usd,
+                day.il_usd
+            );
+        }
+    }
+
+    /// fee_apy_pct must be non-negative and finite for any valid tick stream.
+    #[test]
+    fn db_mode_fee_apy_is_non_negative_and_finite() {
+        let sqrt_price_at_1 = 1u128 << 64;
+        let ticks = vec![
+            make_tick(0, 0, sqrt_price_at_1, 1_000, 0),
+            make_tick(86400, 0, sqrt_price_at_1, 1_000, 200_000),
+        ];
+        let input = default_input();
+        let result = run_db_backtest(input, &ticks).unwrap();
+        assert!(result.fee_apy_pct >= 0.0, "fee_apy_pct must be non-negative");
+        assert!(result.fee_apy_pct.is_finite(), "fee_apy_pct must be finite");
+    }
+
+    /// Verify params_snapshot is populated from input (not from GBM params),
+    /// confirming the shared display path gets the right data in DB mode.
+    #[test]
+    fn db_mode_params_snapshot_matches_input() {
+        let sqrt_price_at_1 = 1u128 << 64;
+        let ticks = vec![
+            make_tick(0, 0, sqrt_price_at_1, 1_000, 0),
+            make_tick(1, 0, sqrt_price_at_1, 1_000, 0),
+        ];
+        let input = DbBacktestInput {
+            initial_value_usd: 50_000.0,
+            entry_price: 2.5,
+            price_lower: 2.0,
+            price_upper: 3.0,
+            fee_rate_bps: 10.0,
+            tick_spacing: 8,
+            position_liquidity: 200,
+            rebalance_cfg: RebalanceConfig {
+                rebalance_out_of_range: false,
+                near_edge_ticks: 0,
+                min_net_pnl_usd: 0.0,
+            },
+            range_factor_lower: 0.90,
+            range_factor_upper: 1.10,
+        };
+        let result = run_db_backtest(input, &ticks).unwrap();
+        let snap = &result.params_snapshot;
+
+        assert!((snap.entry_price - 2.5).abs() < 1e-9);
+        assert!((snap.price_lower - 2.0).abs() < 1e-9);
+        assert!((snap.price_upper - 3.0).abs() < 1e-9);
+        assert!((snap.fee_rate_bps - 10.0).abs() < 1e-9);
+        assert!((snap.initial_value_usd - 50_000.0).abs() < 1e-9);
+        // DB mode sets these to 0.0 (not applicable).
+        assert_eq!(snap.annual_vol_pct, 0.0);
+        assert_eq!(snap.daily_volume_usd, 0.0);
     }
 }
