@@ -1,8 +1,6 @@
 // Async reader for pool_ticks rows, filtered by pool address and UTC date range.
 // Used by the DB-mode backtest replay (BACKTEST-01).
 
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx_core::{executor::Executor, query::query, row::Row};
@@ -11,7 +9,12 @@ use sqlx_postgres::PgPool;
 /// A single pool-state snapshot read back from the `pool_ticks` table.
 /// Mirrors `storage::writer::PoolTick`, using the `time` column name
 /// rather than `observed_at` (which is the DB column name).
+///
+/// Not all fields are consumed by every caller; `#[allow(dead_code)]` is
+/// intentional — the struct is the full row contract, and future callers
+/// (e.g. analytics, reporting) will use the remaining fields.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PoolTickRow {
     pub time: DateTime<Utc>,
     pub pool_address: String,
