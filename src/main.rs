@@ -617,6 +617,8 @@ async fn main() -> Result<()> {
                 // Wrap the full decision path so any error sets error_flag=true rather
                 // than aborting the tick callback (T-02-05).
                 let rebalance_config = strategy::RebalanceConfig::default();
+                // Slippage config — CLI override arrives in Plan 04-03.
+                let slippage_config = strategy::SlippageConfig::default();
                 let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
                     strategy::should_rebalance(
                         pool.tick_current_index,
@@ -632,10 +634,57 @@ async fn main() -> Result<()> {
                     Ok(strategy::RebalanceDecision::Rebalance { .. })
                 );
 
+                // ── Slippage gate (SLIPPAGE-01, SLIPPAGE-02) ───────────────────
+                // Runs only when should_rebalance() returned Rebalance.
+                // Aborts build_rebalance_plan() when price impact exceeds threshold.
+                let mut slippage_passed = false;
+                if is_rebalance {
+                    let slippage_result = strategy::check_slippage(
+                        computed_position_value,
+                        price_current,
+                        pool.liquidity,
+                        &slippage_config,
+                    );
+                    match slippage_result {
+                        strategy::SlippageResult::Ok { impact_bps } => {
+                            tracing::info!(
+                                impact_bps = impact_bps,
+                                threshold_bps = slippage_config.max_bps,
+                                position_value_usd = computed_position_value,
+                                "slippage check passed"
+                            );
+                            slippage_passed = true;
+                        }
+                        strategy::SlippageResult::Abort { impact_bps, threshold_bps } => {
+                            tracing::warn!(
+                                impact_bps = impact_bps,
+                                threshold_bps = threshold_bps,
+                                position_value_usd = computed_position_value,
+                                "slippage guard: rebalance aborted — impact exceeds threshold"
+                            );
+                            if let Some(ref pg) = db_pool {
+                                let abort_row = storage::writer::ShadowRebalanceRow {
+                                    pool_address: pool_addr_clone.clone(),
+                                    trigger_reason: "slippage_abort".to_string(),
+                                    price: price_current,
+                                    simulated_range_width: None,
+                                    simulated_fees_earned: None,
+                                    simulated_il_usd: None,
+                                    simulated_net_pnl: None,
+                                    error_flag: false,
+                                    error_message: None,
+                                };
+                                storage::writer::spawn_shadow_write(pg.clone(), abort_row);
+                            }
+                            // slippage_passed remains false — build_rebalance_plan will not run
+                        }
+                    }
+                }
+
                 // Gate: if a rebalance plan were to be submitted, check shadow guard first.
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
                 // Real rebalance plan construction arrives in Phase 5.
-                if is_rebalance {
+                if slippage_passed {
                     let plan_proxy = format!(
                         "rebalance_needed tick={} range=[{},{}]",
                         pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
@@ -650,7 +699,7 @@ async fn main() -> Result<()> {
                 if let Some(ref pg) = db_pool {
                     let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
                         match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) if slippage_passed => {
                                 let plan = execution::build_rebalance_plan(
                                     &mint_str,
                                     pos.tick_lower_index,
@@ -678,6 +727,10 @@ async fn main() -> Result<()> {
                                     error_flag: false,
                                     error_message: None,
                                 })
+                            }
+                            Ok(strategy::RebalanceDecision::Rebalance { .. }) => {
+                                // Slippage abort already wrote its row above; skip normal row.
+                                None
                             }
                             Ok(strategy::RebalanceDecision::Hold { .. }) => {
                                 // No rebalance needed this tick — do not write a row.
