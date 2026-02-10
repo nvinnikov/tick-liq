@@ -55,6 +55,8 @@ anchor-spl   = "=0.29.0"
 
 # SPL ATA derivation (pulled transitively by anchor-spl but make explicit)
 spl-associated-token-account = "1.1"
+# SPL Token program ID constant (pulled transitively by anchor-spl 0.29 but must be explicit)
+spl-token = "3.5"
 
 [dev-dependencies]
 proptest = "1"
