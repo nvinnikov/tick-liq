@@ -171,6 +171,27 @@ impl OrcaExecutor {
         Ok((Instruction { program_id: self.program_id, accounts, data }, new_mint))
     }
 
+    /// Execute update_fees_and_rewards instruction (calls submit_tx internally).
+    pub fn execute_update_fees_and_rewards(&self, ix: Instruction) -> Result<Signature> {
+        self.submit_tx(ix)
+    }
+
+    /// Execute collect_fees instruction (calls submit_tx internally).
+    pub fn execute_collect_fees(&self, ix: Instruction) -> Result<Signature> {
+        self.submit_tx(ix)
+    }
+
+    /// Execute close_position instruction (calls submit_tx internally).
+    pub fn execute_close_position(&self, ix: Instruction) -> Result<Signature> {
+        self.submit_tx(ix)
+    }
+
+    /// Execute open_position instruction with extra signer for new position_mint
+    /// (calls submit_tx_with_extra_signer internally).
+    pub fn execute_open_position(&self, ix: Instruction, new_mint: &Keypair) -> Result<Signature> {
+        self.submit_tx_with_extra_signer(ix, new_mint)
+    }
+
     /// Build and submit a single-instruction transaction signed by the wallet keypair.
     /// For open_position, call submit_tx_with_extra_signer instead.
     #[allow(dead_code)]
