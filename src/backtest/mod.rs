@@ -284,7 +284,10 @@ mod tests {
         let r1 = run(&params, 1);
         let r2 = run(&params, 2);
         // Two 30-day paths at 80% vol will virtually always diverge.
-        assert_ne!(r1.net_pnl_usd, r2.net_pnl_usd, "distinct seeds should yield distinct paths");
+        assert_ne!(
+            r1.net_pnl_usd, r2.net_pnl_usd,
+            "distinct seeds should yield distinct paths"
+        );
     }
 
     // ── Zero-volatility invariants ────────────────────────────────────────────
@@ -311,7 +314,10 @@ mod tests {
         let mut params = base_params();
         params.annual_volatility = 0.0;
         let result = run(&params, 0);
-        assert_eq!(result.days_in_range, params.days, "all days should be in range with zero vol");
+        assert_eq!(
+            result.days_in_range, params.days,
+            "all days should be in range with zero vol"
+        );
     }
 
     #[test]
@@ -444,7 +450,11 @@ mod tests {
         let prices = [0.001_f64, 0.1, 1.0, 10.0, 1_000.0, 100_000.0];
         let ticks: Vec<i32> = prices.iter().map(|&p| price_to_tick(p, 1)).collect();
         for w in ticks.windows(2) {
-            assert!(w[1] >= w[0], "ticks must be non-decreasing with price: {:?}", ticks);
+            assert!(
+                w[1] >= w[0],
+                "ticks must be non-decreasing with price: {:?}",
+                ticks
+            );
         }
     }
 
@@ -468,7 +478,11 @@ mod tests {
     #[test]
     fn price_to_tick_below_one_is_negative() {
         let tick = price_to_tick(0.5, 1);
-        assert!(tick < 0, "price below 1.0 should map to negative tick, got {}", tick);
+        assert!(
+            tick < 0,
+            "price below 1.0 should map to negative tick, got {}",
+            tick
+        );
     }
 
     // ── Proptest invariants ───────────────────────────────────────────────────
@@ -528,10 +542,7 @@ pub fn print_results(result: &BacktestResult) {
         "Fee:           {:.0} bps   Vol: {:.0}% ann.   Volume: ${:.0}/day",
         p.fee_rate_bps, p.annual_vol_pct, p.daily_volume_usd
     );
-    println!(
-        "Capital:       ${:.0}   Days: {}",
-        p.initial_value_usd, n
-    );
+    println!("Capital:       ${:.0}   Days: {}", p.initial_value_usd, n);
     println!("{}", "─".repeat(60));
 
     // Sample up to 10 evenly-spaced rows so the table isn't overwhelming.
@@ -566,23 +577,32 @@ pub fn print_results(result: &BacktestResult) {
     }
 
     println!("{}", "═".repeat(60));
-    let fees_pct = if p.initial_value_usd > 0.0 { result.total_fees_usd / p.initial_value_usd * 100.0 } else { 0.0 };
-    let il_pct = if p.initial_value_usd > 0.0 { result.total_il_usd / p.initial_value_usd * 100.0 } else { 0.0 };
-    let net_pct = if p.initial_value_usd > 0.0 { result.net_pnl_usd / p.initial_value_usd * 100.0 } else { 0.0 };
+    let fees_pct = if p.initial_value_usd > 0.0 {
+        result.total_fees_usd / p.initial_value_usd * 100.0
+    } else {
+        0.0
+    };
+    let il_pct = if p.initial_value_usd > 0.0 {
+        result.total_il_usd / p.initial_value_usd * 100.0
+    } else {
+        0.0
+    };
+    let net_pct = if p.initial_value_usd > 0.0 {
+        result.net_pnl_usd / p.initial_value_usd * 100.0
+    } else {
+        0.0
+    };
     println!(
         "Fees earned:   ${:.2}  ({:.1}% of capital)",
-        result.total_fees_usd,
-        fees_pct,
+        result.total_fees_usd, fees_pct,
     );
     println!(
         "Imperm. loss:  ${:.2}  ({:.1}% of capital)",
-        result.total_il_usd,
-        il_pct,
+        result.total_il_usd, il_pct,
     );
     println!(
         "Net P&L:       ${:.2}  ({:.1}% of capital)",
-        result.net_pnl_usd,
-        net_pct,
+        result.net_pnl_usd, net_pct,
     );
     println!("Fee APY:       {:.1}%", result.fee_apy_pct);
     println!(

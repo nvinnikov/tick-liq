@@ -15,7 +15,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::backtest::{BacktestResult, DayResult, ParamsSnapshot, price_to_tick};
+use crate::backtest::{price_to_tick, BacktestResult, DayResult, ParamsSnapshot};
 use crate::math::il::compute_il;
 use crate::storage::tick_reader::PoolTickRow;
 use crate::strategy::{self, RebalanceConfig, RebalanceDecision};
@@ -193,7 +193,12 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
         days_in_range += 1;
     }
 
-    let final_il_frac = compute_il(cur_entry_price, final_price, cur_price_lower, cur_price_upper);
+    let final_il_frac = compute_il(
+        cur_entry_price,
+        final_price,
+        cur_price_lower,
+        cur_price_upper,
+    );
     let final_il_usd = final_il_frac * input.initial_value_usd;
     let final_net_pnl_usd = cumulative_fees + final_il_usd;
 
@@ -221,7 +226,7 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
             price_lower: input.price_lower,
             price_upper: input.price_upper,
             fee_rate_bps: input.fee_rate_bps,
-            annual_vol_pct: 0.0, // not applicable in DB mode
+            annual_vol_pct: 0.0,   // not applicable in DB mode
             daily_volume_usd: 0.0, // not applicable in DB mode
             initial_value_usd: input.initial_value_usd,
         },
@@ -310,7 +315,11 @@ mod tests {
         let result = run_db_backtest(input, &[]);
         assert!(result.is_err(), "expected Err for empty tick stream");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("empty"), "error should mention 'empty': {}", msg);
+        assert!(
+            msg.contains("empty"),
+            "error should mention 'empty': {}",
+            msg
+        );
     }
 
     // ── Single tick (only day-0 flush) ───────────────────────────────────────
@@ -380,7 +389,10 @@ mod tests {
         ];
         let input = default_input();
         let result = run_db_backtest(input, &ticks).unwrap();
-        assert_eq!(result.total_fees_usd, 0.0, "zero pool liquidity must skip fee accrual");
+        assert_eq!(
+            result.total_fees_usd, 0.0,
+            "zero pool liquidity must skip fee accrual"
+        );
     }
 
     // ── Multi-day roll-up ────────────────────────────────────────────────────
@@ -390,9 +402,9 @@ mod tests {
         let sqrt_price_at_1 = 1u128 << 64;
         // 3 distinct UTC days: day 0, day 1, day 2
         let ticks = vec![
-            make_tick(0, 0, sqrt_price_at_1, 1000, 0),           // 1970-01-01
-            make_tick(86400, 0, sqrt_price_at_1, 1000, 50),       // 1970-01-02
-            make_tick(2 * 86400, 0, sqrt_price_at_1, 1000, 100),  // 1970-01-03
+            make_tick(0, 0, sqrt_price_at_1, 1000, 0), // 1970-01-01
+            make_tick(86400, 0, sqrt_price_at_1, 1000, 50), // 1970-01-02
+            make_tick(2 * 86400, 0, sqrt_price_at_1, 1000, 100), // 1970-01-03
         ];
         let input = default_input();
         let result = run_db_backtest(input, &ticks).unwrap();
@@ -417,7 +429,10 @@ mod tests {
         let mut input = default_input();
         input.rebalance_cfg.rebalance_out_of_range = true;
         let result = run_db_backtest(input, &ticks).unwrap();
-        assert!(result.total_rebalances > 0, "expected at least one rebalance");
+        assert!(
+            result.total_rebalances > 0,
+            "expected at least one rebalance"
+        );
     }
 
     #[test]
@@ -480,8 +495,8 @@ mod tests {
         let fg_step: u128 = 1_000_000_000;
         let ticks = vec![
             make_tick(0, 0, sqrt_price_at_1, 10_000, 0),
-            make_tick(43200, 0, sqrt_price_at_1, 10_000, fg_step),       // same day
-            make_tick(86400, 0, sqrt_price_at_1, 10_000, 2 * fg_step),   // day 2
+            make_tick(43200, 0, sqrt_price_at_1, 10_000, fg_step), // same day
+            make_tick(86400, 0, sqrt_price_at_1, 10_000, 2 * fg_step), // day 2
         ];
         let input = DbBacktestInput {
             initial_value_usd: 10_000.0,
@@ -585,7 +600,10 @@ mod tests {
         ];
         let input = default_input();
         let result = run_db_backtest(input, &ticks).unwrap();
-        assert!(result.fee_apy_pct >= 0.0, "fee_apy_pct must be non-negative");
+        assert!(
+            result.fee_apy_pct >= 0.0,
+            "fee_apy_pct must be non-negative"
+        );
         assert!(result.fee_apy_pct.is_finite(), "fee_apy_pct must be finite");
     }
 

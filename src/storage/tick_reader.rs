@@ -99,12 +99,8 @@ pub async fn read_ticks(
             pool_address: r.try_get("pool_address")?,
             slot: r.try_get("slot")?,
             tick_current: r.try_get("tick_current")?,
-            sqrt_price: sqrt_price_str
-                .parse()
-                .context("parse sqrt_price as u128")?,
-            liquidity: liquidity_str
-                .parse()
-                .context("parse liquidity as u128")?,
+            sqrt_price: sqrt_price_str.parse().context("parse sqrt_price as u128")?,
+            liquidity: liquidity_str.parse().context("parse liquidity as u128")?,
             fee_growth_global_a: fga_str
                 .parse()
                 .context("parse fee_growth_global_a as u128")?,
@@ -153,7 +149,10 @@ mod tests {
     #[test]
     fn parse_u128_rejects_negative() {
         let s = "-1";
-        assert!(s.parse::<u128>().is_err(), "negative should not parse as u128");
+        assert!(
+            s.parse::<u128>().is_err(),
+            "negative should not parse as u128"
+        );
     }
 
     /// Verify the UTC from/to timestamp derivation logic:
@@ -164,14 +163,8 @@ mod tests {
         let from = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         let to = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
 
-        let from_ts: DateTime<Utc> = from
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight valid")
-            .and_utc();
-        let to_ts: DateTime<Utc> = to
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight valid")
-            .and_utc();
+        let from_ts: DateTime<Utc> = from.and_hms_opt(0, 0, 0).expect("midnight valid").and_utc();
+        let to_ts: DateTime<Utc> = to.and_hms_opt(0, 0, 0).expect("midnight valid").and_utc();
 
         assert_eq!(from_ts.to_rfc3339(), "2026-01-01T00:00:00+00:00");
         assert_eq!(to_ts.to_rfc3339(), "2026-01-02T00:00:00+00:00");

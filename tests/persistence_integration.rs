@@ -22,7 +22,9 @@ use tick_liq::storage::{
 async fn setup() -> sqlx_postgres::PgPool {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for integration tests");
     let pool = storage::connect(&url).await.expect("connect to Postgres");
-    storage::run_migrations(&pool).await.expect("run_migrations");
+    storage::run_migrations(&pool)
+        .await
+        .expect("run_migrations");
 
     // Clean up any rows from previous test runs to ensure a clean slate.
     pool.execute(query(
@@ -67,14 +69,13 @@ async fn pool_tick_write_is_idempotent() {
     write_pool_tick(&pool, &tick).await.unwrap();
     write_pool_tick(&pool, &tick).await.unwrap();
 
-    let count: i64 = query_scalar(
-        "SELECT COUNT(*) FROM pool_ticks WHERE pool_address = $1 AND slot = $2",
-    )
-    .bind("test-pool-A")
-    .bind(12345_i64)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let count: i64 =
+        query_scalar("SELECT COUNT(*) FROM pool_ticks WHERE pool_address = $1 AND slot = $2")
+            .bind("test-pool-A")
+            .bind(12345_i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(count, 1, "idempotent upsert must not create duplicate rows");
 }

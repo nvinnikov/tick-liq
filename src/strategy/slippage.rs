@@ -101,7 +101,10 @@ mod tests {
         let result = check_slippage(1000.0, 100.0, 0, &config);
         match result {
             SlippageResult::Abort { impact_bps, .. } => {
-                assert!(impact_bps.is_infinite(), "expected infinite impact for zero liquidity");
+                assert!(
+                    impact_bps.is_infinite(),
+                    "expected infinite impact for zero liquidity"
+                );
             }
             SlippageResult::Ok { .. } => panic!("expected Abort for zero liquidity"),
         }
@@ -126,10 +129,15 @@ mod tests {
         let result = check_slippage(1000.0, 100.0, 10_000_000_000u128, &config);
         match result {
             SlippageResult::Ok { impact_bps } => {
-                assert!(impact_bps < 50.0, "expected impact < 50 bps, got {impact_bps}");
+                assert!(
+                    impact_bps < 50.0,
+                    "expected impact < 50 bps, got {impact_bps}"
+                );
             }
             SlippageResult::Abort { impact_bps, .. } => {
-                panic!("expected Ok for small trade vs large pool, got Abort with {impact_bps} bps");
+                panic!(
+                    "expected Ok for small trade vs large pool, got Abort with {impact_bps} bps"
+                );
             }
         }
     }
@@ -140,12 +148,20 @@ mod tests {
         let config = SlippageConfig::default();
         let result = check_slippage(100_000.0, 100.0, 1_000, &config);
         match result {
-            SlippageResult::Abort { impact_bps, threshold_bps } => {
-                assert!(impact_bps >= 50.0, "expected impact >= 50 bps, got {impact_bps}");
+            SlippageResult::Abort {
+                impact_bps,
+                threshold_bps,
+            } => {
+                assert!(
+                    impact_bps >= 50.0,
+                    "expected impact >= 50 bps, got {impact_bps}"
+                );
                 assert_eq!(threshold_bps, 50);
             }
             SlippageResult::Ok { impact_bps } => {
-                panic!("expected Abort for large trade vs small pool, got Ok with {impact_bps} bps");
+                panic!(
+                    "expected Abort for large trade vs small pool, got Ok with {impact_bps} bps"
+                );
             }
         }
     }
@@ -168,8 +184,10 @@ mod tests {
         let current_price = 100.0;
         let liquidity = 1_000_000u128;
 
-        let loose_result = check_slippage(position_value_usd, current_price, liquidity, &loose_config);
-        let tight_result = check_slippage(position_value_usd, current_price, liquidity, &tight_config);
+        let loose_result =
+            check_slippage(position_value_usd, current_price, liquidity, &loose_config);
+        let tight_result =
+            check_slippage(position_value_usd, current_price, liquidity, &tight_config);
 
         // At least one of them should abort — the tight threshold should be more restrictive.
         // If both are Ok, the impact is genuinely tiny and the test parameters need adjustment.
@@ -182,7 +200,14 @@ mod tests {
             (SlippageResult::Abort { .. }, SlippageResult::Abort { .. }) => {
                 // Both abort — tight threshold is still more restrictive, that's fine
             }
-            (SlippageResult::Ok { impact_bps: loose_bps }, SlippageResult::Ok { impact_bps: tight_bps }) => {
+            (
+                SlippageResult::Ok {
+                    impact_bps: loose_bps,
+                },
+                SlippageResult::Ok {
+                    impact_bps: tight_bps,
+                },
+            ) => {
                 // If both pass the check, ensure they produce the same impact
                 assert!(
                     (loose_bps - tight_bps).abs() < 1.0,
