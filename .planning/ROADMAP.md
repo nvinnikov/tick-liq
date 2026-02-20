@@ -85,14 +85,16 @@ Plans:
 **Requirements**: LIVE-01, LIVE-02, LIVE-03, LIVE-04
 **Success Criteria** (what must be TRUE):
   1. With `--live` and shadow gate satisfied, a triggered rebalance executes close → collect fees → open via Anchor CPI to Orca
-  2. Drift perp hedge size is computed and logged each cycle (full Drift CPI deferred — LIVE-02 deferred)
+  2. Drift perp hedge size is updated in the same rebalance cycle to match position delta
   3. Process exits with a clear error at startup if `WALLET_KEYPAIR` env var is absent
-  4. LIVE-04 atomicity (LP↔Drift rollback) deferred with LIVE-02
-**Plans**: 2 plans
+  4. If Drift hedge update fails, the LP rebalance is rolled back (and vice versa); partial state is not left on-chain
+**Plans**: 4 plans
 
 Plans:
-- [x] 05-01-PLAN.md — Add whirlpool-cpi deps + implement OrcaExecutor with 4-step instruction builders and unit tests
-- [x] 05-02-PLAN.md — Wire keypair loader + OrcaExecutor into watch loop; simulateTransaction integration tests
+- [ ] 05-01: Implement `execution::orca_rebalance` — close, collect, open CPI sequence via anchor-client; devnet integration test
+- [ ] 05-02: Implement `execution::drift_hedge` — compute delta from current position, submit perp size update to Drift Protocol
+- [ ] 05-03: Implement atomicity wrapper: if either leg fails, emit rollback instruction (or close the orphaned leg); log outcome
+- [ ] 05-04: Keypair loader with env-var-only enforcement; startup validation; end-to-end smoke test on devnet
 
 ### Phase 6: Risk Limits
 **Goal**: The running system enforces configurable hard limits on drawdown, instantaneous IL, and Drift margin ratio, taking the correct per-limit action automatically and surviving process restarts.
@@ -103,12 +105,13 @@ Plans:
   2. When instantaneous IL exceeds `--max-il`, rebalancing is paused but the position stays open; it resumes when IL drops
   3. When Drift margin ratio falls below `--drift-min-margin-ratio`, the Drift hedge is closed while LP remains open
   4. Risk state (peak_value, current_drawdown) is persisted to DB; limits are re-evaluated correctly after process restart
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — RiskMonitor core module: RiskState, RiskAction enum, evaluate() with drawdown/IL/margin checks + unit tests
-- [ ] 06-02-PLAN.md — DB persistence (risk_state table, load_or_init, persist_state) + Drift User account RPC fetch
-- [ ] 06-03-PLAN.md — CLI flags + watch loop wiring: init, evaluate per tick, per-limit actions, state persistence
+- [ ] 06-01: Implement `strategy::risk_monitor` — evaluate drawdown, IL, and margin-ratio thresholds on each tick
+- [ ] 06-02: Implement per-limit action handlers: `close_all`, `pause_rebalancing`, `close_drift_only`
+- [ ] 06-03: Persist risk state (peak_value, drawdown, pause flags) to DB; load on startup; verify continuity across restart
+- [ ] 06-04: CLI flag parsing for all three thresholds; unit tests covering each limit action and DB round-trip
 
 ### Phase 7: Telegram Bot
 **Goal**: Operator receives rebalance proposals via Telegram, can approve or let them time out, and can query status, pause, or pull a 24h P&L report at any time.
@@ -138,6 +141,6 @@ Plans:
 | 2. Shadow Mode | 0/4 | Not started | - |
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
-| 5. Live Execution | 0/2 | Not started | - |
-| 6. Risk Limits | 0/3 | Not started | - |
+| 5. Live Execution | 0/4 | Not started | - |
+| 6. Risk Limits | 0/4 | Not started | - |
 | 7. Telegram Bot | 0/4 | Not started | - |

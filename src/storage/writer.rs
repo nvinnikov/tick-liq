@@ -191,10 +191,7 @@ pub enum GateStatus {
     /// No shadow_rebalances rows exist for this pool.
     NoData { pool_address: String },
     /// Earliest row is too recent; need at least `required_age_days` days.
-    TooRecent {
-        earliest: DateTime<Utc>,
-        required_age_days: i64,
-    },
+    TooRecent { earliest: DateTime<Utc>, required_age_days: i64 },
     /// One or more rows have `error_flag = true`.
     ErrorsPresent { count: i64 },
 }
@@ -233,16 +230,20 @@ impl GateStatus {
 /// 4. Pass — all conditions satisfied
 ///
 /// Uses parameterised queries (T-02-08: no override path).
-pub async fn check_shadow_gate(pool: &PgPool, pool_address: &str) -> anyhow::Result<GateStatus> {
+pub async fn check_shadow_gate(
+    pool: &PgPool,
+    pool_address: &str,
+) -> anyhow::Result<GateStatus> {
     use sqlx_core::query_scalar::query_scalar;
 
     // Step 1: check for any rows at all
-    let earliest: Option<DateTime<Utc>> =
-        query_scalar("SELECT MIN(created_at) FROM shadow_rebalances WHERE pool_address = $1")
-            .bind(pool_address)
-            .fetch_one(pool)
-            .await
-            .context("check_shadow_gate: MIN(created_at) query failed")?;
+    let earliest: Option<DateTime<Utc>> = query_scalar(
+        "SELECT MIN(created_at) FROM shadow_rebalances WHERE pool_address = $1",
+    )
+    .bind(pool_address)
+    .fetch_one(pool)
+    .await
+    .context("check_shadow_gate: MIN(created_at) query failed")?;
 
     let earliest = match earliest {
         None => {
@@ -302,15 +303,14 @@ mod gate_tests {
     #[test]
     fn gate_status_is_pass_predicate() {
         assert!(GateStatus::Pass.is_pass());
-        assert!(!GateStatus::NoData {
-            pool_address: "x".into()
-        }
-        .is_pass());
-        assert!(!GateStatus::TooRecent {
-            earliest: Utc::now(),
-            required_age_days: 14,
-        }
-        .is_pass());
+        assert!(!GateStatus::NoData { pool_address: "x".into() }.is_pass());
+        assert!(
+            !GateStatus::TooRecent {
+                earliest: Utc::now(),
+                required_age_days: 14,
+            }
+            .is_pass()
+        );
         assert!(!GateStatus::ErrorsPresent { count: 1 }.is_pass());
     }
 

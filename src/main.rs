@@ -69,10 +69,6 @@ enum Commands {
         /// Run in live mode: submit real transactions (requires shadow gate passed)
         #[arg(long, conflicts_with = "shadow")]
         live: bool,
-        /// Maximum allowed price impact in basis points (1 bps = 0.01%).
-        /// Rebalances with simulated impact above this threshold are aborted.
-        #[arg(long, default_value_t = 50)]
-        max_slippage_bps: u32,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -204,24 +200,6 @@ enum DbAction {
     Migrate,
 }
 
-/// Load the wallet keypair from the WALLET_KEYPAIR environment variable.
-/// The variable must contain a JSON array of 64 bytes (standard Solana CLI format).
-/// Returns Err with a clear message if the var is absent or malformed.
-/// Called at startup when --live is active; caller must call std::process::exit(1) on Err.
-fn load_wallet_keypair() -> anyhow::Result<solana_sdk::signer::keypair::Keypair> {
-    use anyhow::Context;
-    let raw = std::env::var("WALLET_KEYPAIR").map_err(|_| {
-        anyhow::anyhow!(
-            "WALLET_KEYPAIR env var not set — required for --live mode.\n\
-             Export as a JSON byte array: export WALLET_KEYPAIR='[1,2,3,...,64]'"
-        )
-    })?;
-    let bytes: Vec<u8> = serde_json::from_str(&raw)
-        .context("WALLET_KEYPAIR must be a JSON array of 64 bytes, e.g. [1,2,...,64]")?;
-    solana_sdk::signer::keypair::Keypair::from_bytes(&bytes)
-        .map_err(|e| anyhow::anyhow!("WALLET_KEYPAIR contains invalid keypair bytes: {}", e))
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -255,10 +233,10 @@ async fn main() -> Result<()> {
                     let pool = protocols::orca::parse_pool(&pool_data)?;
 
                     // Fetch real decimals and symbols from chain.
-                    let decimals_a = rpc.fetch_mint_decimals(&pool.token_mint_a)?;
-                    let decimals_b = rpc.fetch_mint_decimals(&pool.token_mint_b)?;
-                    let symbol_a = rpc.fetch_token_symbol(&pool.token_mint_a);
-                    let symbol_b = rpc.fetch_token_symbol(&pool.token_mint_b);
+                    let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+                    let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+                    let symbol_a = rpc.fetch_token_symbol(&pool._token_mint_a);
+                    let symbol_b = rpc.fetch_token_symbol(&pool._token_mint_b);
 
                     use analytics::greeks::sqrt_q64_to_price;
                     let price_current = sqrt_q64_to_price(pool.sqrt_price);
@@ -370,7 +348,8 @@ async fn main() -> Result<()> {
 
                     use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                    let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
+                    let price_current =
+                        analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
                     let price_lower = analytics::greeks::sqrt_q64_to_price(
                         tick_index_to_sqrt_price(pos.tick_lower_index),
                     );
@@ -449,7 +428,7 @@ async fn main() -> Result<()> {
                         amounts,
                         decimals_a,
                         decimals_b,
-                        symbol_a: "SOL".to_string(), // TODO: fetch from mint metadata
+                        symbol_a: "SOL".to_string(),  // TODO: fetch from mint metadata
                         symbol_b: "USDC".to_string(), // TODO: fetch from mint metadata
                         pnl,
                         greeks,
@@ -460,43 +439,13 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
-        Commands::Watch {
-            mint,
-            shadow: _,
-            live,
-            max_slippage_bps,
-        } => {
-            if *max_slippage_bps == 0 || *max_slippage_bps > 10_000 {
-                anyhow::bail!(
-                    "--max-slippage-bps must be between 1 and 10000 (got {})",
-                    max_slippage_bps
-                );
-            }
-            let run_mode = if *live {
-                RunMode::Live
-            } else {
-                RunMode::Shadow
-            };
+        Commands::Watch { mint, shadow: _, live } => {
+            let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
             tracing::info!(mode = ?run_mode, "watch starting");
             let guard = match run_mode {
                 RunMode::Shadow => execution::ShadowGuard::shadow(),
                 RunMode::Live => execution::ShadowGuard::live(),
             };
-
-            // LIVE-03: Load wallet keypair at startup. Exit immediately if absent or invalid.
-            let wallet_keypair: Option<std::sync::Arc<solana_sdk::signer::keypair::Keypair>> =
-                if run_mode == RunMode::Live {
-                    match load_wallet_keypair() {
-                        Ok(kp) => Some(std::sync::Arc::new(kp)),
-                        Err(e) => {
-                            tracing::error!(error = %e, "startup: WALLET_KEYPAIR invalid — cannot start live mode");
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    None
-                };
-
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -525,7 +474,9 @@ async fn main() -> Result<()> {
                     Some(pg)
                 }
                 None => {
-                    tracing::warn!("DATABASE_URL not set — running watch without persistence");
+                    tracing::warn!(
+                        "DATABASE_URL not set — running watch without persistence"
+                    );
                     None
                 }
             };
@@ -535,9 +486,7 @@ async fn main() -> Result<()> {
             if matches!(run_mode, RunMode::Live) {
                 match &db_pool {
                     None => {
-                        eprintln!(
-                            "ERROR: shadow gate FAILED: DATABASE_URL required for --live mode"
-                        );
+                        eprintln!("ERROR: shadow gate FAILED: DATABASE_URL required for --live mode");
                         eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
                         std::process::exit(2);
                     }
@@ -565,14 +514,10 @@ async fn main() -> Result<()> {
                 }
             });
 
-            // Copy CLI value before the 'static closure captures it.
-            let max_slippage_bps_val: u32 = *max_slippage_bps;
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
-            let rpc_url_clone = rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
             let mint_str = mint.clone();
-            let wallet_keypair_clone = wallet_keypair.clone();
             let on_notify = Box::new(move |json: serde_json::Value| {
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
                 print!("\x1B[2J\x1B[1;1H");
@@ -632,9 +577,9 @@ async fn main() -> Result<()> {
                     pos.fee_growth_checkpoint_b,
                     pos.liquidity,
                 );
-                let computed_fees_earned = (pos.fee_owed_a + accrued_a) as f64 / scale_a
-                    * price_current
-                    + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+                let computed_fees_earned =
+                    (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
+                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
                 // Use cached entry price when available; fall back to current price
                 // which yields IL = 0 (conservative — avoids spurious error rows).
@@ -648,7 +593,8 @@ async fn main() -> Result<()> {
                 );
                 let computed_position_value = match &amounts_result {
                     Ok(a) => {
-                        a.amount_a as f64 / scale_a * price_current + a.amount_b as f64 / scale_b
+                        a.amount_a as f64 / scale_a * price_current
+                            + a.amount_b as f64 / scale_b
                     }
                     Err(_) => 0.0,
                 };
@@ -671,229 +617,31 @@ async fn main() -> Result<()> {
                 // Wrap the full decision path so any error sets error_flag=true rather
                 // than aborting the tick callback (T-02-05).
                 let rebalance_config = strategy::RebalanceConfig::default();
-                // Slippage config — wired from CLI --max-slippage-bps flag (Plan 04-03).
-                let slippage_config = strategy::SlippageConfig {
-                    max_bps: max_slippage_bps_val,
-                };
-                let decision_result: Result<strategy::RebalanceDecision, String> =
-                    Ok(strategy::should_rebalance(
+                let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
+                    strategy::should_rebalance(
                         pool.tick_current_index,
                         pos.tick_lower_index,
                         pos.tick_upper_index,
                         computed_fees_earned + computed_il_usd,
                         &rebalance_config,
-                    ));
+                    )
+                );
 
                 let is_rebalance = matches!(
                     &decision_result,
                     Ok(strategy::RebalanceDecision::Rebalance { .. })
                 );
 
-                // ── Slippage gate (SLIPPAGE-01, SLIPPAGE-02) ───────────────────
-                // Runs only when should_rebalance() returned Rebalance.
-                // Aborts build_rebalance_plan() when price impact exceeds threshold.
-                let mut slippage_passed = false;
+                // Gate: if a rebalance plan were to be submitted, check shadow guard first.
+                // In Phase 2 there is no real plan — we use the pool state as the proxy.
+                // Real rebalance plan construction arrives in Phase 5.
                 if is_rebalance {
-                    let slippage_result = strategy::check_slippage(
-                        computed_position_value,
-                        price_current,
-                        pool.liquidity,
-                        &slippage_config,
+                    let plan_proxy = format!(
+                        "rebalance_needed tick={} range=[{},{}]",
+                        pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
                     );
-                    match slippage_result {
-                        strategy::SlippageResult::Ok { impact_bps } => {
-                            tracing::info!(
-                                impact_bps = impact_bps,
-                                threshold_bps = slippage_config.max_bps,
-                                position_value_usd = computed_position_value,
-                                "slippage check passed"
-                            );
-                            slippage_passed = true;
-                        }
-                        strategy::SlippageResult::Abort {
-                            impact_bps,
-                            threshold_bps,
-                        } => {
-                            tracing::warn!(
-                                impact_bps = impact_bps,
-                                threshold_bps = threshold_bps,
-                                position_value_usd = computed_position_value,
-                                "slippage guard: rebalance aborted — impact exceeds threshold"
-                            );
-                            if let Some(ref pg) = db_pool {
-                                let abort_row = storage::writer::ShadowRebalanceRow {
-                                    pool_address: pool_addr_clone.clone(),
-                                    trigger_reason: "slippage_abort".to_string(),
-                                    price: price_current,
-                                    simulated_range_width: None,
-                                    simulated_fees_earned: None,
-                                    simulated_il_usd: None,
-                                    simulated_net_pnl: None,
-                                    error_flag: false,
-                                    error_message: None,
-                                };
-                                storage::writer::spawn_shadow_write(pg.clone(), abort_row);
-                            }
-                            // slippage_passed remains false — build_rebalance_plan will not run
-                        }
-                    }
-                }
-
-                // Gate: dispatch rebalance based on run mode.
-                // Shadow mode: log the decision. Live mode: execute 4-step OrcaExecutor sequence.
-                if slippage_passed {
-                    match guard {
-                        execution::ShadowGuard::Shadow => {
-                            // Shadow mode: log decision, do not submit any transaction.
-                            tracing::info!(
-                                tick = pool.tick_current_index,
-                                tick_lower = pos.tick_lower_index,
-                                tick_upper = pos.tick_upper_index,
-                                "ShadowGuard: rebalance decision logged (shadow mode — no tx)"
-                            );
-                        }
-                        execution::ShadowGuard::Live => {
-                            // LIVE-01: Execute 4-step Orca rebalance sequence.
-                            // Drift stub: compute hedge size and log it (LIVE-02 deferred).
-                            let sqrt_price_f64 = pool.sqrt_price as f64 / (1u128 << 64) as f64;
-                            let lp_delta =
-                                -(pos.liquidity as f64) / (2.0 * sqrt_price_f64 * price_current);
-                            let hedge = execution::compute_hedge_size(lp_delta, price_current);
-                            execution::log_hedge_stub(&hedge);
-
-                            // Build rebalance plan for new range.
-                            let plan = execution::build_rebalance_plan(
-                                &mint_str,
-                                pos.tick_lower_index,
-                                pos.tick_upper_index,
-                                pool.tick_spacing as i32,
-                            );
-
-                            if let Some(ref kp) = wallet_keypair_clone {
-                                let executor =
-                                    execution::OrcaExecutor::new(&rpc_url_clone, kp.clone());
-                                let pool_pubkey = Pubkey::from_str(&pool_addr_clone)
-                                    .expect("pool address was already parsed at watch startup");
-                                let position_mint_pubkey = Pubkey::from_str(&mint_str)
-                                    .expect("position mint was already parsed at watch startup");
-                                let position_pda_key =
-                                    protocols::orca::position_pda(&position_mint_pubkey);
-                                let tick_lower_start = protocols::orca::tick_array_start_index(
-                                    pos.tick_lower_index,
-                                    pool.tick_spacing,
-                                );
-                                let tick_upper_start = protocols::orca::tick_array_start_index(
-                                    pos.tick_upper_index,
-                                    pool.tick_spacing,
-                                );
-                                let ta_lower =
-                                    protocols::orca::tick_array_pda(&pool_pubkey, tick_lower_start);
-                                let ta_upper =
-                                    protocols::orca::tick_array_pda(&pool_pubkey, tick_upper_start);
-
-                                // Step 1: update_fees_and_rewards
-                                let step1_result = executor
-                                    .ix_update_fees_and_rewards(
-                                        &pool_pubkey,
-                                        &position_pda_key,
-                                        &ta_lower,
-                                        &ta_upper,
-                                    )
-                                    .and_then(|ix| executor.execute_update_fees_and_rewards(ix));
-
-                                // Step 2: collect_fees (only if step 1 succeeded)
-                                let step2_result = step1_result.and_then(|_| {
-                                    executor
-                                        .ix_collect_fees(
-                                            &pool_pubkey,
-                                            &pool,
-                                            &position_pda_key,
-                                            &position_mint_pubkey,
-                                        )
-                                        .and_then(|ix| executor.execute_collect_fees(ix))
-                                });
-
-                                // Step 3: close_position (only if step 2 succeeded)
-                                let step3_result = step2_result.and_then(|_| {
-                                    executor
-                                        .ix_close_position(&position_pda_key, &position_mint_pubkey)
-                                        .and_then(|ix| executor.execute_close_position(ix))
-                                });
-
-                                // Step 4: open_position with retry (LIVE-01 retry spec)
-                                let open_result: anyhow::Result<()> = step3_result.and_then(|_| {
-                                    match executor.ix_open_position(&pool_pubkey, plan.new_tick_lower, plan.new_tick_upper) {
-                                        Err(e) => Err(e),
-                                        Ok((ix, new_mint_kp)) => {
-                                            match executor.execute_open_position(ix, &new_mint_kp) {
-                                                Ok(sig) => {
-                                                    tracing::info!(
-                                                        signature = %sig,
-                                                        new_tick_lower = plan.new_tick_lower,
-                                                        new_tick_upper = plan.new_tick_upper,
-                                                        "live rebalance: open_position succeeded"
-                                                    );
-                                                    Ok(())
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        error = %e,
-                                                        "open_position failed — retrying once after 2s (LIVE-01)"
-                                                    );
-                                                    std::thread::sleep(std::time::Duration::from_secs(2));
-                                                    // Rebuild ix since it consumed the keypair
-                                                    executor
-                                                        .ix_open_position(&pool_pubkey, plan.new_tick_lower, plan.new_tick_upper)
-                                                        .and_then(|(ix2, new_mint_kp2)| {
-                                                            executor.execute_open_position(ix2, &new_mint_kp2)
-                                                                .map(|sig| {
-                                                                    tracing::info!(
-                                                                        signature = %sig,
-                                                                        "live rebalance: open_position retry succeeded"
-                                                                    );
-                                                                })
-                                                        })
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-
-                                // Failure path: emit CRITICAL log + persist error row
-                                if let Err(ref e) = open_result {
-                                    tracing::error!(
-                                        error = %e,
-                                        pool = %pool_addr_clone,
-                                        "CRITICAL: live rebalance failed — operator intervention required; position may be partially closed"
-                                    );
-                                    if let Some(ref pg) = db_pool {
-                                        let failure_row = storage::writer::ShadowRebalanceRow {
-                                            pool_address: pool_addr_clone.clone(),
-                                            trigger_reason: "live_rebalance_failed".to_string(),
-                                            price: price_current,
-                                            simulated_range_width: Some(
-                                                (plan.new_tick_upper - plan.new_tick_lower) as f64,
-                                            ),
-                                            simulated_fees_earned: Some(computed_fees_earned),
-                                            simulated_il_usd: Some(computed_il_usd),
-                                            simulated_net_pnl: Some(
-                                                computed_fees_earned - computed_il_usd.abs(),
-                                            ),
-                                            error_flag: true,
-                                            error_message: Some(format!("{:#}", e)),
-                                        };
-                                        storage::writer::spawn_shadow_write(
-                                            pg.clone(),
-                                            failure_row,
-                                        );
-                                    }
-                                }
-                            } else {
-                                tracing::error!(
-                                    "live mode active but wallet_keypair is None — this is a bug"
-                                );
-                            }
-                        }
+                    if let Err(e) = guard.submit(&plan_proxy) {
+                        tracing::warn!(error = %e, "rebalance submission gated");
                     }
                 }
 
@@ -902,17 +650,14 @@ async fn main() -> Result<()> {
                 if let Some(ref pg) = db_pool {
                     let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
                         match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason })
-                                if slippage_passed =>
-                            {
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
                                 let plan = execution::build_rebalance_plan(
                                     &mint_str,
                                     pos.tick_lower_index,
                                     pos.tick_upper_index,
                                     pool.tick_spacing as i32,
                                 );
-                                let range_width =
-                                    (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                                let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
                                 tracing::info!(
                                     pool = %pool_addr_clone,
                                     trigger = %reason,
@@ -933,10 +678,6 @@ async fn main() -> Result<()> {
                                     error_flag: false,
                                     error_message: None,
                                 })
-                            }
-                            Ok(strategy::RebalanceDecision::Rebalance { .. }) => {
-                                // Slippage abort already wrote its row above; skip normal row.
-                                None
                             }
                             Ok(strategy::RebalanceDecision::Hold { .. }) => {
                                 // No rebalance needed this tick — do not write a row.
@@ -992,10 +733,11 @@ async fn main() -> Result<()> {
                     // Await write_pool_tick (durability checkpoint). The callback
                     // runs inside a tokio runtime; block_in_place lets us call
                     // block_on without violating single-threaded executor rules.
-                    let write_result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(storage::writer::write_pool_tick(pg, &tick))
-                    });
+                    let write_result =
+                        tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(storage::writer::write_pool_tick(pg, &tick))
+                        });
                     if let Err(e) = write_result {
                         tracing::warn!(error = %e, "pool_ticks write failed");
                     }
@@ -1063,19 +805,15 @@ async fn main() -> Result<()> {
             for ta in &tick_arrays {
                 for (i, tick) in ta.ticks.iter().enumerate() {
                     if tick.initialized {
-                        let tick_index =
-                            ta.start_tick_index + (i as i32) * (pool_state.tick_spacing as i32);
+                        let tick_index = ta.start_tick_index
+                            + (i as i32) * (pool_state.tick_spacing as i32);
                         tick_deltas.push((tick_index, tick.liquidity_net));
                     }
                 }
             }
 
             println!();
-            println!(
-                "Depth Map  ({} initialized ticks across {} arrays)",
-                tick_deltas.len(),
-                tick_arrays.len()
-            );
+            println!("Depth Map  ({} initialized ticks across {} arrays)", tick_deltas.len(), tick_arrays.len());
             println!("{}", "─".repeat(70));
 
             let distribution = analytics::depth::build_distribution(
@@ -1229,16 +967,16 @@ async fn main() -> Result<()> {
                     rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
                 let pool = protocols::orca::parse_pool(&pool_data)?;
 
-                let decimals_a = rpc.fetch_mint_decimals(&pool.token_mint_a)?;
-                let decimals_b = rpc.fetch_mint_decimals(&pool.token_mint_b)?;
+                let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+                let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
 
                 let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
-                let price_lower = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
-                    pos.tick_lower_index,
-                ));
-                let price_upper = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
-                    pos.tick_upper_index,
-                ));
+                let price_lower = analytics::greeks::sqrt_q64_to_price(
+                    tick_index_to_sqrt_price(pos.tick_lower_index),
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    tick_index_to_sqrt_price(pos.tick_upper_index),
+                );
 
                 let amounts = analytics::amounts::compute_token_amounts(
                     pos.liquidity,
@@ -1339,7 +1077,9 @@ async fn main() -> Result<()> {
                 )
             })?;
             if keypair_b58.trim().is_empty() {
-                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
+                anyhow::bail!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                );
             }
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
@@ -1391,9 +1131,10 @@ async fn main() -> Result<()> {
                 // ── DB mode: replay real pool_ticks from TimescaleDB ──────────
                 use chrono::NaiveDate;
 
-                let db_url = cli.db_url.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("--db-url or DATABASE_URL is required for DB-mode backtest")
-                })?;
+                let db_url = cli
+                    .db_url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--db-url or DATABASE_URL is required for DB-mode backtest"))?;
 
                 let from_date: NaiveDate = from
                     .as_deref()
@@ -1419,9 +1160,7 @@ async fn main() -> Result<()> {
                     anyhow::bail!(
                         "No ticks found for pool {} between {} and {}. \
                          Accumulate data with `watch` before running a DB backtest.",
-                        pool_addr,
-                        from_date,
-                        to_date
+                        pool_addr, from_date, to_date
                     );
                 }
 
@@ -1474,7 +1213,9 @@ async fn main() -> Result<()> {
                 )
             })?;
             if keypair_b58.trim().is_empty() {
-                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
+                anyhow::bail!(
+                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
+                );
             }
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);

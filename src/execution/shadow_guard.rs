@@ -7,7 +7,6 @@ pub enum ShadowGuard {
 }
 
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum ShadowGuardError {
     #[error("transaction submission blocked: shadow mode is active")]
     Blocked,
@@ -26,9 +25,7 @@ impl ShadowGuard {
     }
 
     /// Called at the single point where a rebalance transaction would be submitted.
-    /// Phase 5 replaces the submit call with direct ShadowGuard match; kept for
-    /// backward-compat and test coverage.
-    #[allow(dead_code)]
+    /// In Phase 2, Live is a no-op placeholder (real RPC submit arrives in Phase 5).
     pub fn submit<T: std::fmt::Debug>(&self, tx: &T) -> Result<(), ShadowGuardError> {
         match self {
             Self::Shadow => {
