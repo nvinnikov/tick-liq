@@ -61,3 +61,14 @@ CREATE INDEX IF NOT EXISTS idx_shadow_rebalances_pool_created
 
 CREATE INDEX IF NOT EXISTS idx_shadow_rebalances_pool_error
     ON shadow_rebalances (pool_address) WHERE error_flag = true;
+
+-- Risk state persistence (RISK-04): one row per pool_address, upserted on every tick.
+-- halt_flag survives restart -- operator must manually clear via SQL (D-12).
+CREATE TABLE IF NOT EXISTS risk_state (
+    pool_address          TEXT PRIMARY KEY,
+    peak_pnl              DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    current_drawdown_pct  DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    pause_flag            BOOLEAN NOT NULL DEFAULT FALSE,
+    halt_flag             BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
