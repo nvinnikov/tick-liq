@@ -360,8 +360,7 @@ async fn main() -> Result<()> {
 
                     use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                    let price_current =
-                        analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
+                    let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
                     let price_lower = analytics::greeks::sqrt_q64_to_price(
                         tick_index_to_sqrt_price(pos.tick_lower_index),
                     );
@@ -440,7 +439,7 @@ async fn main() -> Result<()> {
                         amounts,
                         decimals_a,
                         decimals_b,
-                        symbol_a: "SOL".to_string(),  // TODO: fetch from mint metadata
+                        symbol_a: "SOL".to_string(), // TODO: fetch from mint metadata
                         symbol_b: "USDC".to_string(), // TODO: fetch from mint metadata
                         pnl,
                         greeks,
@@ -480,7 +479,11 @@ async fn main() -> Result<()> {
             let max_il_val: Option<f64> = *max_il;
             let drift_min_margin_ratio_val: Option<f64> = *drift_min_margin_ratio;
 
-            let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
+            let run_mode = if *live {
+                RunMode::Live
+            } else {
+                RunMode::Shadow
+            };
             tracing::info!(mode = ?run_mode, "watch starting");
             let guard = match run_mode {
                 RunMode::Shadow => execution::ShadowGuard::shadow(),
@@ -514,9 +517,7 @@ async fn main() -> Result<()> {
                     Some(pg)
                 }
                 None => {
-                    tracing::warn!(
-                        "DATABASE_URL not set — running watch without persistence"
-                    );
+                    tracing::warn!("DATABASE_URL not set — running watch without persistence");
                     None
                 }
             };
@@ -526,7 +527,9 @@ async fn main() -> Result<()> {
             if matches!(run_mode, RunMode::Live) {
                 match &db_pool {
                     None => {
-                        eprintln!("ERROR: shadow gate FAILED: DATABASE_URL required for --live mode");
+                        eprintln!(
+                            "ERROR: shadow gate FAILED: DATABASE_URL required for --live mode"
+                        );
                         eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
                         std::process::exit(2);
                     }
@@ -541,6 +544,57 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+
+            // ── Risk monitor initialization (RISK-04) ──────────────────────────
+            // Load or init risk state from DB. Optional: only when DB is available.
+            // Uses Arc<Mutex<RiskMonitor>> because the tick callback is Fn (not FnMut).
+            let risk_monitor_opt: Option<
+                std::sync::Arc<std::sync::Mutex<strategy::risk_monitor::RiskMonitor>>,
+            > = match &db_pool {
+                Some(pg) => {
+                    let risk_state =
+                        strategy::risk_monitor::RiskMonitor::load_or_init(pg, &pool_addr).await?;
+
+                    // Log startup halt/pause state (D-12)
+                    if risk_state.halt_flag {
+                        tracing::error!(
+                            pool = %pool_addr,
+                            "risk: halt_flag active from previous session -- rebalancing halted until DB is manually cleared"
+                        );
+                    }
+                    if risk_state.pause_flag {
+                        tracing::warn!(
+                            pool = %pool_addr,
+                            "risk: pause_flag active from previous session -- rebalancing paused"
+                        );
+                    }
+
+                    // Derive Drift User PDA from keypair if available (for RISK-03).
+                    // In shadow mode (no keypair), drift_user_pubkey = None -> Drift check skipped.
+                    let drift_user_pubkey: Option<solana_sdk::pubkey::Pubkey> = None;
+
+                    let monitor = strategy::risk_monitor::RiskMonitor::new(
+                        risk_state,
+                        max_drawdown_val,
+                        max_il_val,
+                        drift_min_margin_ratio_val,
+                        drift_user_pubkey,
+                        cli.rpc_url.clone(),
+                    );
+                    Some(std::sync::Arc::new(std::sync::Mutex::new(monitor)))
+                }
+                None => {
+                    if max_drawdown_val.is_some()
+                        || max_il_val.is_some()
+                        || drift_min_margin_ratio_val.is_some()
+                    {
+                        tracing::warn!(
+                            "Risk limits configured but DATABASE_URL not set -- risk monitoring disabled"
+                        );
+                    }
+                    None
+                }
+            };
 
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
@@ -617,9 +671,9 @@ async fn main() -> Result<()> {
                     pos.fee_growth_checkpoint_b,
                     pos.liquidity,
                 );
-                let computed_fees_earned =
-                    (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
-                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+                let computed_fees_earned = (pos.fee_owed_a + accrued_a) as f64 / scale_a
+                    * price_current
+                    + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
                 // Use cached entry price when available; fall back to current price
                 // which yields IL = 0 (conservative — avoids spurious error rows).
@@ -633,8 +687,7 @@ async fn main() -> Result<()> {
                 );
                 let computed_position_value = match &amounts_result {
                     Ok(a) => {
-                        a.amount_a as f64 / scale_a * price_current
-                            + a.amount_b as f64 / scale_b
+                        a.amount_a as f64 / scale_a * price_current + a.amount_b as f64 / scale_b
                     }
                     Err(_) => 0.0,
                 };
@@ -653,19 +706,164 @@ async fn main() -> Result<()> {
                 );
                 let computed_il_usd = il_fraction * computed_position_value;
 
+                // ── Persist tick snapshot + P&L (D-05: pnl write before risk gate) ─
+                // pool_ticks write (durable) + pnl_history write (fire-and-forget).
+                // Risk gate runs immediately after these writes.
+                let snap_opt: Option<storage::writer::PnlSnapshot> = if let Some(ref pg) = db_pool {
+                    // Extract Solana slot from the accountNotification context.
+                    let slot: i64 = json
+                        .pointer("/params/result/context/slot")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+
+                    let now = chrono::Utc::now();
+
+                    let tick = storage::writer::PoolTick {
+                        pool_address: pool_addr_clone.clone(),
+                        slot,
+                        tick_current: pool.tick_current_index,
+                        sqrt_price: pool.sqrt_price,
+                        liquidity: pool.liquidity,
+                        fee_growth_global_a: pool.fee_growth_global_a,
+                        fee_growth_global_b: pool.fee_growth_global_b,
+                        observed_at: now,
+                    };
+
+                    // Await write_pool_tick (durability checkpoint). The callback
+                    // runs inside a tokio runtime; block_in_place lets us call
+                    // block_on without violating single-threaded executor rules.
+                    let write_result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(storage::writer::write_pool_tick(pg, &tick))
+                    });
+                    if let Err(e) = write_result {
+                        tracing::warn!(error = %e, "pool_ticks write failed");
+                    }
+
+                    let snap = storage::writer::PnlSnapshot {
+                        mint: mint_str.clone(),
+                        pool_address: pool_addr_clone.clone(),
+                        fees_earned: computed_fees_earned,
+                        il_usd: computed_il_usd,
+                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                        position_value: computed_position_value,
+                        price: price_current,
+                        observed_at: now,
+                    };
+                    // Fire-and-forget: does not block tick processing (PERSIST-03).
+                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
+                    Some(snap)
+                } else {
+                    None
+                };
+
+                // ── Risk gate (D-04: every tick; D-05: after pnl_write, before should_rebalance) ──
+                if let (Some(ref snap), Some(ref risk_arc)) = (&snap_opt, &risk_monitor_opt) {
+                    // Fetch Drift margin ratio synchronously (D-01) via block_in_place.
+                    // Returns None on RPC failure (treat as "margin OK" per D-03).
+                    let drift_margin = {
+                        let rm = risk_arc.lock().unwrap();
+                        // Only fetch if both pubkey and threshold are configured.
+                        if rm.drift_user_pubkey.is_some() {
+                            tokio::task::block_in_place(|| rm.fetch_drift_margin_ratio())
+                        } else {
+                            None
+                        }
+                    };
+
+                    let risk_action = {
+                        let mut rm = risk_arc.lock().unwrap();
+                        rm.evaluate(snap, drift_margin)
+                    };
+
+                    let pg_for_persist = db_pool.as_ref().unwrap().clone();
+
+                    match &risk_action {
+                        strategy::risk_monitor::RiskAction::HaltAll { drawdown_pct } => {
+                            tracing::error!(
+                                drawdown_pct,
+                                pool = %pool_addr_clone,
+                                "risk: drawdown limit breached -- halting all activity"
+                            );
+                            // LP position close: OrcaExecutor CPI deferred to LIVE-02.
+                            // halt_flag is already set in evaluate(); persist it now (D-11).
+                            tracing::error!(
+                                pool = %pool_addr_clone,
+                                "halt: drawdown limit hit -- LP close and Drift hedge close deferred (LIVE-02)"
+                            );
+                            let state = risk_arc.lock().unwrap().state.clone();
+                            strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg_for_persist,
+                                state,
+                            );
+                            // Skip rest of tick cycle (D-06): no rebalance evaluation.
+                            return;
+                        }
+                        strategy::risk_monitor::RiskAction::PauseRebalancing { il_pct } => {
+                            tracing::warn!(
+                                il_pct,
+                                pool = %pool_addr_clone,
+                                "risk: IL pause active -- skipping rebalance this tick"
+                            );
+                            let state = risk_arc.lock().unwrap().state.clone();
+                            strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg_for_persist,
+                                state,
+                            );
+                            // Skip should_rebalance (D-06).
+                            return;
+                        }
+                        strategy::risk_monitor::RiskAction::ResumeRebalancing { il_pct } => {
+                            tracing::info!(
+                                il_pct,
+                                pool = %pool_addr_clone,
+                                "risk: IL recovered -- resuming rebalance"
+                            );
+                            let state = risk_arc.lock().unwrap().state.clone();
+                            strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg_for_persist,
+                                state,
+                            );
+                            // Fall through to should_rebalance()
+                        }
+                        strategy::risk_monitor::RiskAction::CloseDriftHedge { margin_ratio } => {
+                            tracing::error!(
+                                margin_ratio,
+                                pool = %pool_addr_clone,
+                                "risk: Drift margin below threshold -- Drift hedge close deferred (LIVE-02)"
+                            );
+                            let state = risk_arc.lock().unwrap().state.clone();
+                            strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg_for_persist,
+                                state,
+                            );
+                            // LP rebalance continues (RISK-03: only Drift side affected).
+                            // Fall through to should_rebalance()
+                        }
+                        strategy::risk_monitor::RiskAction::Continue => {
+                            // Persist state (peak_pnl may have been updated).
+                            let state = risk_arc.lock().unwrap().state.clone();
+                            strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg_for_persist,
+                                state,
+                            );
+                            // Fall through to should_rebalance()
+                        }
+                    }
+                }
+
                 // ── Shadow rebalance decision (SHADOW-02) ───────────────────────
                 // Wrap the full decision path so any error sets error_flag=true rather
                 // than aborting the tick callback (T-02-05).
                 let rebalance_config = strategy::RebalanceConfig::default();
-                let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
-                    strategy::should_rebalance(
+                let decision_result: Result<strategy::RebalanceDecision, String> =
+                    Ok(strategy::should_rebalance(
                         pool.tick_current_index,
                         pos.tick_lower_index,
                         pos.tick_upper_index,
                         computed_fees_earned + computed_il_usd,
                         &rebalance_config,
-                    )
-                );
+                    ));
 
                 let is_rebalance = matches!(
                     &decision_result,
@@ -697,7 +895,8 @@ async fn main() -> Result<()> {
                                     pos.tick_upper_index,
                                     pool.tick_spacing as i32,
                                 );
-                                let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                                let range_width =
+                                    (plan.new_tick_upper - plan.new_tick_lower) as f64;
                                 tracing::info!(
                                     pool = %pool_addr_clone,
                                     trigger = %reason,
@@ -746,54 +945,6 @@ async fn main() -> Result<()> {
                     if let Some(row) = shadow_row {
                         storage::writer::spawn_shadow_write(pg.clone(), row);
                     }
-                }
-
-                // ── Persist tick snapshot ───────────────────────────────────────
-                if let Some(ref pg) = db_pool {
-                    // Extract Solana slot from the accountNotification context.
-                    // Shape: {"params":{"result":{"context":{"slot": N},...},...},...}
-                    let slot: i64 = json
-                        .pointer("/params/result/context/slot")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
-
-                    let now = chrono::Utc::now();
-
-                    let tick = storage::writer::PoolTick {
-                        pool_address: pool_addr_clone.clone(),
-                        slot,
-                        tick_current: pool.tick_current_index,
-                        sqrt_price: pool.sqrt_price,
-                        liquidity: pool.liquidity,
-                        fee_growth_global_a: pool.fee_growth_global_a,
-                        fee_growth_global_b: pool.fee_growth_global_b,
-                        observed_at: now,
-                    };
-
-                    // Await write_pool_tick (durability checkpoint). The callback
-                    // runs inside a tokio runtime; block_in_place lets us call
-                    // block_on without violating single-threaded executor rules.
-                    let write_result =
-                        tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(storage::writer::write_pool_tick(pg, &tick))
-                        });
-                    if let Err(e) = write_result {
-                        tracing::warn!(error = %e, "pool_ticks write failed");
-                    }
-
-                    let snap = storage::writer::PnlSnapshot {
-                        mint: mint_str.clone(),
-                        pool_address: pool_addr_clone.clone(),
-                        fees_earned: computed_fees_earned,
-                        il_usd: computed_il_usd,
-                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
-                        position_value: computed_position_value,
-                        price: price_current,
-                        observed_at: now,
-                    };
-                    // Fire-and-forget: does not block tick processing (PERSIST-03).
-                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap));
                 }
             });
 
@@ -845,15 +996,19 @@ async fn main() -> Result<()> {
             for ta in &tick_arrays {
                 for (i, tick) in ta.ticks.iter().enumerate() {
                     if tick.initialized {
-                        let tick_index = ta.start_tick_index
-                            + (i as i32) * (pool_state.tick_spacing as i32);
+                        let tick_index =
+                            ta.start_tick_index + (i as i32) * (pool_state.tick_spacing as i32);
                         tick_deltas.push((tick_index, tick.liquidity_net));
                     }
                 }
             }
 
             println!();
-            println!("Depth Map  ({} initialized ticks across {} arrays)", tick_deltas.len(), tick_arrays.len());
+            println!(
+                "Depth Map  ({} initialized ticks across {} arrays)",
+                tick_deltas.len(),
+                tick_arrays.len()
+            );
             println!("{}", "─".repeat(70));
 
             let distribution = analytics::depth::build_distribution(
@@ -1011,12 +1166,12 @@ async fn main() -> Result<()> {
                 let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
 
                 let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
-                let price_lower = analytics::greeks::sqrt_q64_to_price(
-                    tick_index_to_sqrt_price(pos.tick_lower_index),
-                );
-                let price_upper = analytics::greeks::sqrt_q64_to_price(
-                    tick_index_to_sqrt_price(pos.tick_upper_index),
-                );
+                let price_lower = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
+                    pos.tick_lower_index,
+                ));
+                let price_upper = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
+                    pos.tick_upper_index,
+                ));
 
                 let amounts = analytics::amounts::compute_token_amounts(
                     pos.liquidity,
@@ -1117,9 +1272,7 @@ async fn main() -> Result<()> {
                 )
             })?;
             if keypair_b58.trim().is_empty() {
-                anyhow::bail!(
-                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
-                );
+                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
             }
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
@@ -1171,10 +1324,9 @@ async fn main() -> Result<()> {
                 // ── DB mode: replay real pool_ticks from TimescaleDB ──────────
                 use chrono::NaiveDate;
 
-                let db_url = cli
-                    .db_url
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("--db-url or DATABASE_URL is required for DB-mode backtest"))?;
+                let db_url = cli.db_url.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--db-url or DATABASE_URL is required for DB-mode backtest")
+                })?;
 
                 let from_date: NaiveDate = from
                     .as_deref()
@@ -1200,7 +1352,9 @@ async fn main() -> Result<()> {
                     anyhow::bail!(
                         "No ticks found for pool {} between {} and {}. \
                          Accumulate data with `watch` before running a DB backtest.",
-                        pool_addr, from_date, to_date
+                        pool_addr,
+                        from_date,
+                        to_date
                     );
                 }
 
@@ -1253,9 +1407,7 @@ async fn main() -> Result<()> {
                 )
             })?;
             if keypair_b58.trim().is_empty() {
-                anyhow::bail!(
-                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
-                );
+                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
             }
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
