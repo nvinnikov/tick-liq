@@ -762,7 +762,7 @@ async fn main() -> Result<()> {
                     // Fetch Drift margin ratio synchronously (D-01) via block_in_place.
                     // Returns None on RPC failure (treat as "margin OK" per D-03).
                     let drift_margin = {
-                        let rm = risk_arc.lock().unwrap();
+                        let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
                         // Only fetch if both pubkey and threshold are configured.
                         if rm.drift_user_pubkey.is_some() {
                             tokio::task::block_in_place(|| rm.fetch_drift_margin_ratio())
@@ -772,7 +772,7 @@ async fn main() -> Result<()> {
                     };
 
                     let risk_action = {
-                        let mut rm = risk_arc.lock().unwrap();
+                        let mut rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
                         rm.evaluate(snap, drift_margin)
                     };
 
@@ -791,7 +791,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "halt: drawdown limit hit -- LP close and Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap().state.clone();
+                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
                             strategy::risk_monitor::RiskMonitor::persist_state(
                                 pg_for_persist,
                                 state,
@@ -805,7 +805,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL pause active -- skipping rebalance this tick"
                             );
-                            let state = risk_arc.lock().unwrap().state.clone();
+                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
                             strategy::risk_monitor::RiskMonitor::persist_state(
                                 pg_for_persist,
                                 state,
@@ -819,7 +819,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL recovered -- resuming rebalance"
                             );
-                            let state = risk_arc.lock().unwrap().state.clone();
+                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
                             strategy::risk_monitor::RiskMonitor::persist_state(
                                 pg_for_persist,
                                 state,
@@ -832,7 +832,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: Drift margin below threshold -- Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap().state.clone();
+                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
                             strategy::risk_monitor::RiskMonitor::persist_state(
                                 pg_for_persist,
                                 state,
@@ -842,7 +842,7 @@ async fn main() -> Result<()> {
                         }
                         strategy::risk_monitor::RiskAction::Continue => {
                             // Persist state (peak_pnl may have been updated).
-                            let state = risk_arc.lock().unwrap().state.clone();
+                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
                             strategy::risk_monitor::RiskMonitor::persist_state(
                                 pg_for_persist,
                                 state,

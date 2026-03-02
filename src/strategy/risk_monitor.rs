@@ -308,6 +308,11 @@ impl RiskMonitor {
         let mut total_base_abs: i64 = 0;
         let mut total_quote_abs: i64 = 0;
 
+        if payload.len() < PERP_ARRAY_OFFSET + MAX_PERP_POSITIONS * PERP_POSITION_SIZE {
+            // Payload is smaller than expected layout — treat as no data (margin OK).
+            return None;
+        }
+
         if payload.len() >= PERP_ARRAY_OFFSET + MAX_PERP_POSITIONS * PERP_POSITION_SIZE {
             for i in 0..MAX_PERP_POSITIONS {
                 let pos_start = PERP_ARRAY_OFFSET + i * PERP_POSITION_SIZE;
