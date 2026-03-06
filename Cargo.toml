@@ -47,5 +47,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls"] }
 sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono"] }
 
+# Telegram bot
+teloxide = { version = "0.13", features = ["macros"] }
+dptree = "0.3"
+
 [dev-dependencies]
 proptest = "1"
