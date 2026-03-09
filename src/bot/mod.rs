@@ -10,6 +10,7 @@ use crate::strategy::risk_monitor::RiskMonitor;
 
 /// Shared state passed to every bot command handler.
 #[derive(Clone)]
+#[allow(dead_code)] // fields used by Plans 02 and 03 handler implementations
 pub struct BotState {
     pub db_pool: PgPool,
     pub risk_monitor: Arc<Mutex<RiskMonitor>>,
