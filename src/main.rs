@@ -615,12 +615,14 @@ async fn main() -> Result<()> {
             let _bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
                 match (&db_pool, &risk_monitor_opt) {
                     (Some(pg), Some(rm)) => {
+                        let chat_id = bot::load_chat_id()?;
                         let bot_state = bot::BotState {
                             db_pool: pg.clone(),
                             risk_monitor: rm.clone(),
                             pool_address: pool_addr.clone(),
                             mint: mint.clone(),
                             pending_approval: pending_approval.clone(),
+                            chat_id,
                         };
                         let handle = bot::spawn_bot(bot_state).await?;
                         tracing::info!("Telegram bot started");

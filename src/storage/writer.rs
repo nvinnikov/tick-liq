@@ -164,6 +164,34 @@ pub async fn write_shadow_rebalance(pool: &PgPool, row: &ShadowRebalanceRow) -> 
     Ok(())
 }
 
+/// Log a rebalance skip due to approval timeout or rejection (TG-02).
+///
+/// Writes a row to `shadow_rebalances` with trigger_reason prefixed by
+/// `approval_` (e.g., `approval_timeout`, `approval_rejected`) and
+/// `error_flag = false` — a skip is expected behaviour, not an error.
+/// All values are bound as parameters (T-07-06: no SQL injection via message content).
+pub async fn write_approval_skip(
+    pool: &PgPool,
+    pool_address: &str,
+    reason: &str,
+    price: f64,
+) -> Result<()> {
+    pool.execute(
+        query(
+            "INSERT INTO shadow_rebalances \
+             (pool_address, trigger_reason, price, error_flag, error_message) \
+             VALUES ($1, $2, $3, FALSE, $4)",
+        )
+        .bind(pool_address)
+        .bind(format!("approval_{}", reason)) // 'approval_timeout' or 'approval_rejected'
+        .bind(price)
+        .bind(format!("Rebalance skipped: {}", reason)),
+    )
+    .await
+    .context("write_approval_skip failed")?;
+    Ok(())
+}
+
 /// Fire-and-forget variant of `write_shadow_rebalance`, mirroring `spawn_pnl_write`.
 ///
 /// Spawns a Tokio task immediately — caller is never blocked by DB I/O.
