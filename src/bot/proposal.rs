@@ -1,8 +1,3 @@
-// Dead-code lint suppressed here because send_proposal/await_approval are wired
-// into main.rs in Plan 02 Task 2. Without that wiring clippy -D warnings would
-// reject the module; the allow is removed once the caller is in place.
-#![allow(dead_code)]
-
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
