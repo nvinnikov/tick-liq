@@ -21,6 +21,9 @@ pub struct RiskState {
     pub current_drawdown_pct: f64,
     pub pause_flag: bool,
     pub halt_flag: bool,
+    /// D-04: operator-controlled rebalance halt, independent from IL-triggered pause_flag.
+    /// Set/cleared via Telegram /pause and /resume commands (Plan 03, TG-04).
+    pub operator_pause: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -105,7 +108,7 @@ impl RiskMonitor {
         let row_opt = pool
             .fetch_optional(
                 query(
-                    "SELECT peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at \
+                    "SELECT peak_pnl, current_drawdown_pct, pause_flag, halt_flag, operator_pause, updated_at \
                        FROM risk_state WHERE pool_address = $1",
                 )
                 .bind(pool_address),
@@ -127,6 +130,7 @@ impl RiskMonitor {
                 current_drawdown_pct: row.get("current_drawdown_pct"),
                 pause_flag: row.get("pause_flag"),
                 halt_flag,
+                operator_pause: row.get("operator_pause"),
                 updated_at: row.get("updated_at"),
             };
             return Ok(state);
@@ -136,8 +140,8 @@ impl RiskMonitor {
         pool.execute(
             query(
                 "INSERT INTO risk_state \
-                 (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at) \
-                 VALUES ($1, 0.0, 0.0, FALSE, FALSE, NOW()) \
+                 (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, operator_pause, updated_at) \
+                 VALUES ($1, 0.0, 0.0, FALSE, FALSE, FALSE, NOW()) \
                  ON CONFLICT (pool_address) DO NOTHING",
             )
             .bind(pool_address),
@@ -151,6 +155,7 @@ impl RiskMonitor {
             current_drawdown_pct: 0.0,
             pause_flag: false,
             halt_flag: false,
+            operator_pause: false,
             updated_at: Utc::now(),
         })
     }
@@ -170,20 +175,22 @@ impl RiskMonitor {
                 .execute(
                     query(
                         "INSERT INTO risk_state \
-                         (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at) \
-                         VALUES ($1, $2, $3, $4, $5, NOW()) \
+                         (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, operator_pause, updated_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, NOW()) \
                          ON CONFLICT (pool_address) DO UPDATE SET \
                            peak_pnl = EXCLUDED.peak_pnl, \
                            current_drawdown_pct = EXCLUDED.current_drawdown_pct, \
                            pause_flag = EXCLUDED.pause_flag, \
                            halt_flag = EXCLUDED.halt_flag, \
+                           operator_pause = EXCLUDED.operator_pause, \
                            updated_at = EXCLUDED.updated_at",
                     )
                     .bind(&state.pool_address)
                     .bind(state.peak_pnl)
                     .bind(state.current_drawdown_pct)
                     .bind(state.pause_flag)
-                    .bind(state.halt_flag),
+                    .bind(state.halt_flag)
+                    .bind(state.operator_pause),
                 )
                 .await;
 
@@ -446,6 +453,7 @@ mod tests {
             current_drawdown_pct: 0.0,
             pause_flag,
             halt_flag,
+            operator_pause: false,
             updated_at: Utc::now(),
         }
     }
