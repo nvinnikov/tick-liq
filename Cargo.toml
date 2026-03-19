@@ -44,7 +44,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Storage
-sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls"] }
+sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls", "runtime-tokio"] }
 sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono"] }
 
 # Telegram bot

@@ -106,11 +106,7 @@ pub fn parse_tick_array(data: &[u8]) -> Result<TickArray> {
 pub fn tick_array_pda(whirlpool: &Pubkey, start_tick_index: i32) -> Pubkey {
     let start_str = start_tick_index.to_string();
     let (pda, _) = Pubkey::find_program_address(
-        &[
-            b"tick_array",
-            whirlpool.as_ref(),
-            start_str.as_bytes(),
-        ],
+        &[b"tick_array", whirlpool.as_ref(), start_str.as_bytes()],
         &whirlpool_program_pubkey(),
     );
     pda
