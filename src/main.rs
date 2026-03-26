@@ -708,7 +708,9 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
+                // SOL=9 decimals, USDC=6 decimals → multiply raw price by 10^(9-6)=1000
+                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price)
+                    * 10f64.powi(9 - 6);
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
