@@ -81,8 +81,8 @@ pub async fn query_24h_report(pool: &PgPool, pool_address: &str) -> Result<Repor
                    COALESCE(SUM(il_usd), 0.0) AS total_il, \
                    COALESCE(SUM(net_pnl), 0.0) AS total_net_pnl, \
                    COUNT(*) AS row_count, \
-                   COALESCE(MIN(price), 0.0) AS min_price, \
-                   COALESCE(MAX(price), 0.0) AS max_price \
+                   COALESCE(MIN(price) FILTER (WHERE price > 0), 0.0) AS min_price, \
+                   COALESCE(MAX(price) FILTER (WHERE price > 0), 0.0) AS max_price \
                  FROM pnl_history \
                  WHERE pool_address = $1 AND time >= NOW() - INTERVAL '24 hours'",
             )
