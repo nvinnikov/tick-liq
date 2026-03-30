@@ -776,6 +776,16 @@ async fn main() -> Result<()> {
                     fee_growth_baseline_b,
                     pos.liquidity,
                 );
+                tracing::info!(
+                    pos_liquidity = pos.liquidity,
+                    fee_growth_delta_a = pool.fee_growth_global_a.wrapping_sub(fee_growth_baseline_a),
+                    fee_growth_delta_b = pool.fee_growth_global_b.wrapping_sub(fee_growth_baseline_b),
+                    fee_owed_a = pos.fee_owed_a,
+                    fee_owed_b = pos.fee_owed_b,
+                    accrued_a,
+                    accrued_b,
+                    "fee debug"
+                );
                 let computed_fees_earned = (pos.fee_owed_a + accrued_a) as f64 / scale_a
                     * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
