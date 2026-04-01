@@ -90,10 +90,6 @@ enum Commands {
         /// Rebalance is skipped if /approve not received within this window.
         #[arg(long, default_value_t = 300u64)]
         approve_timeout_secs: u64,
-        /// Entry price override (USD). If provided, unconditionally saves this as the
-        /// cached entry price instead of using the current pool price at watch start.
-        #[arg(long)]
-        entry_price: Option<f64>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -472,15 +468,7 @@ async fn main() -> Result<()> {
             drift_min_margin_ratio,
             telegram,
             approve_timeout_secs,
-            entry_price,
         } => {
-            // Validate entry price if provided
-            if let Some(ep) = entry_price {
-                if *ep <= 0.0 {
-                    anyhow::bail!("--entry-price must be positive (got {})", ep);
-                }
-            }
-
             // Validate risk limit flags
             if let Some(dd) = max_drawdown {
                 if *dd <= 0.0 || *dd > 100.0 {
@@ -534,14 +522,6 @@ async fn main() -> Result<()> {
             let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
-
-            // ── --entry-price override: unconditionally persist operator-supplied price ──
-            // When --entry-price is provided, write it to cache before the Bug 3 block
-            // so the Bug 3 guard (which checks is_none()) will skip the pool-price fallback.
-            if let Some(ep) = entry_price {
-                cache::save_entry_price(mint, *ep)?;
-                tracing::info!(entry_price = *ep, "entry price overridden via --entry-price flag");
-            }
 
             // ── Bug 3 fix: persist entry price on first observation ────────────
             // cache::load_entry_price returns None on first run because nothing
@@ -610,14 +590,15 @@ async fn main() -> Result<()> {
                 std::sync::Arc<std::sync::Mutex<strategy::risk_monitor::RiskMonitor>>,
             > = match &db_pool {
                 Some(pg) => {
-                    let risk_state =
+                    let mut risk_state =
                         strategy::risk_monitor::RiskMonitor::load_or_init(pg, &pool_addr).await?;
 
-                    // Log startup halt/pause state (D-12)
+                    // Log startup halt/pause state before reset so the operator
+                    // knows stale flags were detected and are now being cleared (D-12).
                     if risk_state.halt_flag {
-                        tracing::error!(
+                        tracing::warn!(
                             pool = %pool_addr,
-                            "risk: halt_flag active from previous session -- rebalancing halted until DB is manually cleared"
+                            "risk: halt_flag was active from previous session -- clearing for new session"
                         );
                     }
                     if risk_state.pause_flag {
@@ -632,6 +613,18 @@ async fn main() -> Result<()> {
                             "risk: operator_pause active from previous session -- rebalancing paused by operator"
                         );
                     }
+
+                    // Reset session-volatile fields so stale peak_pnl / halt_flag from
+                    // a prior session do not produce an instant 100% drawdown halt on
+                    // restart. operator_pause is intentionally preserved.
+                    strategy::risk_monitor::RiskMonitor::reset_session(pg, &pool_addr).await?;
+                    risk_state.peak_pnl = 0.0;
+                    risk_state.halt_flag = false;
+                    risk_state.current_drawdown_pct = 0.0;
+                    tracing::info!(
+                        pool = %pool_addr,
+                        "risk: session reset -- peak_pnl and halt_flag cleared for new session"
+                    );
 
                     // Derive Drift User PDA from keypair if available (for RISK-03).
                     // In shadow mode (no keypair), drift_user_pubkey = None -> Drift check skipped.
@@ -797,13 +790,9 @@ async fn main() -> Result<()> {
                     pos.liquidity,
                 );
 
-                // Bug 4 fix: exclude pos.fee_owed_a/b (pre-session legacy fees) from
-                // session P&L. These are constant and price-denominated — including them
-                // causes peak_pnl to be set on tick 1, then drop 100% on tick 2 when SOL
-                // price ticks down even slightly, triggering an instant drawdown halt.
-                // Only accrued_a/b (fees earned since this watch session started) matter.
-                let computed_fees_earned = accrued_a as f64 / scale_a * price_current
-                    + accrued_b as f64 / scale_b;
+                let computed_fees_earned = (pos.fee_owed_a + accrued_a) as f64 / scale_a
+                    * price_current
+                    + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
                 // Bug 3 fix: entry price is now guaranteed to be in cache (written at
                 // watch start above). unwrap_or fallback kept as safety net only.
