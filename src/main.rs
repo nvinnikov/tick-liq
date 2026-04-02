@@ -90,6 +90,10 @@ enum Commands {
         /// Rebalance is skipped if /approve not received within this window.
         #[arg(long, default_value_t = 300u64)]
         approve_timeout_secs: u64,
+        /// Entry price override (USD). If provided, unconditionally saves this as the
+        /// cached entry price instead of using the current pool price at watch start.
+        #[arg(long)]
+        entry_price: Option<f64>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -468,6 +472,7 @@ async fn main() -> Result<()> {
             drift_min_margin_ratio,
             telegram,
             approve_timeout_secs,
+            entry_price,
         } => {
             // Validate risk limit flags
             if let Some(dd) = max_drawdown {
@@ -522,6 +527,20 @@ async fn main() -> Result<()> {
             let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
+
+            // Validate entry price if provided
+            if let Some(ep) = entry_price {
+                if *ep <= 0.0 {
+                    anyhow::bail!("--entry-price must be positive (got {})", ep);
+                }
+            }
+
+            // --entry-price override: unconditionally persist operator-supplied price
+            // so the Bug 3 guard (which checks is_none()) will skip the pool-price fallback.
+            if let Some(ep) = entry_price {
+                cache::save_entry_price(mint, *ep)?;
+                tracing::info!(entry_price = *ep, "entry price overridden via --entry-price flag");
+            }
 
             // ── Bug 3 fix: persist entry price on first observation ────────────
             // cache::load_entry_price returns None on first run because nothing
