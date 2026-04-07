@@ -42,5 +42,18 @@ chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Storage (sqlx 0.6 + Postgres/TimescaleDB).
+# We pin sqlx 0.6 (not 0.7+) because 0.7+ unconditionally depends on
+# sqlx-mysql, whose rsa→zeroize chain conflicts with solana-client 1.18's
+# curve25519-dalek (which needs zeroize <1.4). 0.6 keeps mysql behind a
+# feature flag, so default-features=false drops it cleanly.
+sqlx = { version = "0.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "bigdecimal", "macros", "migrate"] }
+bigdecimal = "0.3"
+
 [dev-dependencies]
 proptest = "1"
+
+[features]
+# Enable integration tests that require a live Postgres+TimescaleDB.
+# Run with: cargo test --features db-tests
+db-tests = []
