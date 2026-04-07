@@ -8,6 +8,7 @@ pub struct Greeks {
 }
 
 /// Convert Q64.64 sqrt_price to f64 price.
+#[allow(dead_code)]
 pub fn sqrt_price_q64_to_price(sqrt_price_q64: u128) -> f64 {
     let sqrt_p = sqrt_price_q64 as f64 / (1u128 << 64) as f64;
     sqrt_p * sqrt_p

@@ -27,6 +27,7 @@ impl SolanaRpc {
     }
 
     /// Fetch account program owner. Used to verify account type before deserializing.
+    #[allow(dead_code)]
     pub fn fetch_owner(&self, address: &str) -> Result<Pubkey> {
         let pubkey = Pubkey::from_str(address)
             .map_err(|e| anyhow!("Invalid address '{}': {}", address, e))?;

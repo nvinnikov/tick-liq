@@ -12,6 +12,7 @@ const DISC: usize = 8;
 /// testing on mainnet. Borsh is order-sensitive.
 /// Source: https://github.com/raydium-io/raydium-clmm/blob/master/programs/amm/src/states/pool.rs
 #[derive(BorshDeserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct RaydiumPool {
     pub bump: [u8; 1],
     pub amm_config: Pubkey,
@@ -32,6 +33,7 @@ pub struct RaydiumPool {
 
 /// Key fields from a Raydium CLMM PersonalPositionState account.
 #[derive(BorshDeserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct RaydiumPosition {
     pub bump: [u8; 1],
     pub nft_mint: Pubkey,

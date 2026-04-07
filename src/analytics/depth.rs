@@ -1,5 +1,6 @@
 /// One price level with its total active liquidity.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LiquidityLevel {
     pub price: f64,
     pub liquidity: u128,
@@ -7,6 +8,7 @@ pub struct LiquidityLevel {
 
 /// Estimated price impact for a trade.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PriceImpact {
     pub target_pct: f64,
     pub target_price: f64,
@@ -18,6 +20,7 @@ pub struct PriceImpact {
 /// tick_liquidities: (tick_index, net_liquidity_delta) pairs from tick array accounts.
 /// Uses the net-liquidity-delta model: liquidity at a tick = sum of all deltas at or below it.
 /// For now, accepts an empty slice — pool-level liquidity is used as a fallback in callers.
+#[allow(dead_code)]
 pub fn build_distribution(
     tick_liquidities: &[(i32, i64)],
     current_tick: i32,
