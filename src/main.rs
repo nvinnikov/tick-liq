@@ -3,16 +3,20 @@ use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
-mod rpc;
-mod protocols;
 mod analytics;
 mod display;
+mod protocols;
+mod rpc;
 
 #[derive(Parser)]
 #[command(name = "lp-inspect")]
 #[command(about = "CLMM position inspector for Solana")]
 struct Cli {
-    #[arg(long, env = "SOLANA_RPC_URL", default_value = "https://api.devnet.solana.com")]
+    #[arg(
+        long,
+        env = "SOLANA_RPC_URL",
+        default_value = "https://api.devnet.solana.com"
+    )]
     rpc_url: String,
 
     #[command(subcommand)]
@@ -75,15 +79,12 @@ async fn main() -> Result<()> {
                     let pool_data = rpc.fetch_account_data(&pos.whirlpool.to_string())?;
                     let pool = protocols::orca::parse_pool(&pool_data)?;
 
-                    // sqrt_price Q64.64 -> f64 price
-                    let to_f64_price = |sqrt_q64: u128| -> f64 {
-                        let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
-                        s * s
-                    };
-
-                    let price_current = to_f64_price(pool.sqrt_price);
-                    let price_lower = to_f64_price(tick_index_to_sqrt_price(pos.tick_lower_index));
-                    let price_upper = to_f64_price(tick_index_to_sqrt_price(pos.tick_upper_index));
+                    use analytics::greeks::sqrt_q64_to_price;
+                    let price_current = sqrt_q64_to_price(pool.sqrt_price);
+                    let price_lower =
+                        sqrt_q64_to_price(tick_index_to_sqrt_price(pos.tick_lower_index));
+                    let price_upper =
+                        sqrt_q64_to_price(tick_index_to_sqrt_price(pos.tick_upper_index));
 
                     let in_range = pool.tick_current_index >= pos.tick_lower_index
                         && pool.tick_current_index <= pos.tick_upper_index;
@@ -121,7 +122,8 @@ async fn main() -> Result<()> {
                     let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / 1e9 * price_current
                         + (pos.fee_owed_b + accrued_b) as f64 / 1e6;
 
-                    let il_fraction = analytics::pnl::compute_il(0.0, price_current, price_lower, price_upper);
+                    let il_fraction =
+                        analytics::pnl::compute_il(0.0, price_current, price_lower, price_upper);
                     let position_value = amounts.amount_a as f64 / 1e9 * price_current
                         + amounts.amount_b as f64 / 1e6;
                     let il_usd = il_fraction * position_value;
@@ -153,7 +155,8 @@ async fn main() -> Result<()> {
                     display::table::print_position(&summary);
                 }
                 "raydium" => {
-                    let raydium_program = Pubkey::from_str(protocols::raydium::RAYDIUM_CLMM_PROGRAM_ID)?;
+                    let raydium_program =
+                        Pubkey::from_str(protocols::raydium::RAYDIUM_CLMM_PROGRAM_ID)?;
                     let mint_pubkey = Pubkey::from_str(mint)?;
                     let (position_pda, _) = Pubkey::find_program_address(
                         &[b"position", mint_pubkey.as_ref()],
@@ -166,24 +169,23 @@ async fn main() -> Result<()> {
                     let pool_data = rpc.fetch_account_data(&pos.pool_id.to_string())?;
                     let pool = protocols::raydium::parse_pool(&pool_data)?;
 
-                    let to_price = |sqrt_q64: u128| -> f64 {
-                        let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
-                        s * s
-                    };
-                    let price_current = to_price(pool.sqrt_price_x64);
+                    let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
 
                     println!("Raydium Position: {}", position_pda);
                     println!("Pool:     {}", pos.pool_id);
                     println!("Price:    ${:.4}", price_current);
-                    println!("Tick:     {} (range: {} -- {})", pool.tick_current, pos.tick_lower_index, pos.tick_upper_index);
+                    println!(
+                        "Tick:     {} (range: {} -- {})",
+                        pool.tick_current, pos.tick_lower_index, pos.tick_upper_index
+                    );
                     println!("Liquidity: {}", pos.liquidity);
                 }
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
         Commands::Watch { mint } => {
+            use futures_util::{SinkExt, StreamExt};
             use tokio_tungstenite::connect_async;
-            use futures_util::{StreamExt, SinkExt};
 
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
             let whirlpool_program = Pubkey::from_str(protocols::orca::WHIRLPOOL_PROGRAM_ID)?;
@@ -197,14 +199,16 @@ async fn main() -> Result<()> {
             let pos = protocols::orca::parse_position(&position_data)?;
             let pool_addr = pos.whirlpool.to_string();
 
-            let ws_url = cli.rpc_url
+            let ws_url = cli
+                .rpc_url
                 .replace("https://", "wss://")
                 .replace("http://", "ws://");
 
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
 
-            let (mut ws, _) = connect_async(&ws_url).await
+            let (mut ws, _) = connect_async(&ws_url)
+                .await
                 .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
 
             let subscribe = serde_json::json!({
@@ -212,7 +216,10 @@ async fn main() -> Result<()> {
                 "method": "accountSubscribe",
                 "params": [pool_addr, {"encoding": "base64", "commitment": "confirmed"}]
             });
-            ws.send(tokio_tungstenite::tungstenite::Message::Text(subscribe.to_string())).await?;
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                subscribe.to_string(),
+            ))
+            .await?;
 
             println!("Subscribed. Waiting for updates...\n");
 
@@ -229,25 +236,30 @@ async fn main() -> Result<()> {
 
                 // Clear terminal and reprint
                 print!("\x1B[2J\x1B[1;1H");
-                println!("[{}] Pool update received", chrono::Utc::now().format("%H:%M:%S UTC"));
+                println!(
+                    "[{}] Pool update received",
+                    chrono::Utc::now().format("%H:%M:%S UTC")
+                );
                 println!();
 
                 let pool_data = rpc.fetch_account_data(&pool_addr)?;
                 let pool = protocols::orca::parse_pool(&pool_data)?;
 
-                let to_price = |sqrt_q64: u128| -> f64 {
-                    let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
-                    s * s
-                };
-
-                let price_current = to_price(pool.sqrt_price);
+                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
                 println!("Pool:     {}", pool_addr);
                 println!("Price:    ${:.4}", price_current);
                 println!("Tick:     {}", pool.tick_current_index);
-                println!("In range: {}", if in_range { "YES" } else { "NO -- needs rebalance" });
+                println!(
+                    "In range: {}",
+                    if in_range {
+                        "YES"
+                    } else {
+                        "NO -- needs rebalance"
+                    }
+                );
                 println!("Liquidity: {}", pool.liquidity);
             }
         }
@@ -256,11 +268,7 @@ async fn main() -> Result<()> {
             let pool_data = rpc.fetch_account_data(pool)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
 
-            let to_price = |sqrt_q64: u128| -> f64 {
-                let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
-                s * s
-            };
-            let price_current = to_price(pool_state.sqrt_price);
+            let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
 
             println!(
                 "Liquidity Distribution  (pool liquidity: {:.0}M)",
@@ -269,8 +277,18 @@ async fn main() -> Result<()> {
             println!("{}", "─".repeat(50));
 
             for pct in [1.0f64, 2.0, 5.0] {
-                let buy = analytics::depth::estimate_impact(price_current, pool_state.liquidity, pct, true);
-                let sell = analytics::depth::estimate_impact(price_current, pool_state.liquidity, pct, false);
+                let buy = analytics::depth::estimate_impact(
+                    price_current,
+                    pool_state.liquidity,
+                    pct,
+                    true,
+                );
+                let sell = analytics::depth::estimate_impact(
+                    price_current,
+                    pool_state.liquidity,
+                    pct,
+                    false,
+                );
                 println!(
                     "  +{:.0}%  (~${:.4}): ${:.0} needed to buy  |  ${:.0} needed to sell",
                     pct, buy.target_price, buy.usd_needed, sell.usd_needed
@@ -278,18 +296,16 @@ async fn main() -> Result<()> {
             }
 
             println!();
-            println!("Note: uses pool-level liquidity. Tick-array depth map coming in a future update.");
+            println!(
+                "Note: uses pool-level liquidity. Tick-array depth map coming in a future update."
+            );
         }
         Commands::Impact { pool, size } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
             let pool_data = rpc.fetch_account_data(pool)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
 
-            let to_price = |sqrt_q64: u128| -> f64 {
-                let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
-                s * s
-            };
-            let price_current = to_price(pool_state.sqrt_price);
+            let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
 
             let l = pool_state.liquidity as f64;
             let sqrt_p = price_current.sqrt();

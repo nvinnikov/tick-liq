@@ -17,10 +17,10 @@ pub struct WhirlpoolPool {
     pub whirlpool_bump: [u8; 1],
     pub tick_spacing: u16,
     pub tick_spacing_seed: [u8; 2],
-    pub fee_rate: u16,           // hundredths of a bip; 300 = 0.03%
+    pub fee_rate: u16, // hundredths of a bip; 300 = 0.03%
     pub protocol_fee_rate: u16,
     pub liquidity: u128,
-    pub sqrt_price: u128,        // Q64.64 fixed-point
+    pub sqrt_price: u128, // Q64.64 fixed-point
     pub tick_current_index: i32,
     pub protocol_fee_owed_a: u64,
     pub protocol_fee_owed_b: u64,

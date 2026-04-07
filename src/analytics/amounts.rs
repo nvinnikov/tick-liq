@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
-use orca_whirlpools_core::{tick_index_to_sqrt_price, try_get_amount_delta_a, try_get_amount_delta_b};
+use orca_whirlpools_core::{
+    tick_index_to_sqrt_price, try_get_amount_delta_a, try_get_amount_delta_b,
+};
 
 /// Token amounts held in a position, in raw on-chain units (before decimal adjustment).
 #[derive(Debug, Clone, PartialEq)]
@@ -57,10 +59,11 @@ mod tests {
         // Price below range: all liquidity is token A
         let amounts = compute_token_amounts(
             1_000_000,
-            sqrt_price_at_tick(50),  // current below range [100, 200]
+            sqrt_price_at_tick(50), // current below range [100, 200]
             100,
             200,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(amounts.amount_a > 0, "token A should be > 0 below range");
         assert_eq!(amounts.amount_b, 0, "token B should be 0 below range");
     }
@@ -72,7 +75,8 @@ mod tests {
             sqrt_price_at_tick(300), // current above range [100, 200]
             100,
             200,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(amounts.amount_a, 0, "token A should be 0 above range");
         assert!(amounts.amount_b > 0, "token B should be > 0 above range");
     }
@@ -84,19 +88,15 @@ mod tests {
             sqrt_price_at_tick(150), // in range [100, 200]
             100,
             200,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(amounts.amount_a > 0, "token A should be > 0 in range");
         assert!(amounts.amount_b > 0, "token B should be > 0 in range");
     }
 
     #[test]
     fn test_zero_liquidity_returns_zero_amounts() {
-        let amounts = compute_token_amounts(
-            0,
-            sqrt_price_at_tick(150),
-            100,
-            200,
-        ).unwrap();
+        let amounts = compute_token_amounts(0, sqrt_price_at_tick(150), 100, 200).unwrap();
         assert_eq!(amounts.amount_a, 0);
         assert_eq!(amounts.amount_b, 0);
     }
