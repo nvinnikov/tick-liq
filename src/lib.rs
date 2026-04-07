@@ -5,7 +5,9 @@
 //! not yet depend on these modules; migration of the existing inspector code
 //! into these layers will happen in follow-up tasks.
 
+pub mod config;
 pub mod data;
+pub mod error;
 pub mod execution;
 pub mod math;
 pub mod storage;
