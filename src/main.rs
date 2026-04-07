@@ -182,7 +182,74 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Watch { mint } => {
-            println!("TODO: watch {}", mint);
+            use tokio_tungstenite::connect_async;
+            use futures_util::{StreamExt, SinkExt};
+
+            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let whirlpool_program = Pubkey::from_str(protocols::orca::WHIRLPOOL_PROGRAM_ID)?;
+            let mint_pubkey = Pubkey::from_str(mint)?;
+            let (position_pda, _) = Pubkey::find_program_address(
+                &[b"position", mint_pubkey.as_ref()],
+                &whirlpool_program,
+            );
+
+            let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+            let pos = protocols::orca::parse_position(&position_data)?;
+            let pool_addr = pos.whirlpool.to_string();
+
+            let ws_url = cli.rpc_url
+                .replace("https://", "wss://")
+                .replace("http://", "ws://");
+
+            println!("Watching {}  (Ctrl+C to stop)", mint);
+            println!("WebSocket: {}", ws_url);
+
+            let (mut ws, _) = connect_async(&ws_url).await
+                .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
+
+            let subscribe = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "accountSubscribe",
+                "params": [pool_addr, {"encoding": "base64", "commitment": "confirmed"}]
+            });
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(subscribe.to_string())).await?;
+
+            println!("Subscribed. Waiting for updates...\n");
+
+            while let Some(msg) = ws.next().await {
+                let text = match msg? {
+                    tokio_tungstenite::tungstenite::Message::Text(t) => t,
+                    _ => continue,
+                };
+
+                let json: serde_json::Value = serde_json::from_str(&text)?;
+                if json["method"] != "accountNotification" {
+                    continue;
+                }
+
+                // Clear terminal and reprint
+                print!("\x1B[2J\x1B[1;1H");
+                println!("[{}] Pool update received", chrono::Utc::now().format("%H:%M:%S UTC"));
+                println!();
+
+                let pool_data = rpc.fetch_account_data(&pool_addr)?;
+                let pool = protocols::orca::parse_pool(&pool_data)?;
+
+                let to_price = |sqrt_q64: u128| -> f64 {
+                    let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
+                    s * s
+                };
+
+                let price_current = to_price(pool.sqrt_price);
+                let in_range = pool.tick_current_index >= pos.tick_lower_index
+                    && pool.tick_current_index <= pos.tick_upper_index;
+
+                println!("Pool:     {}", pool_addr);
+                println!("Price:    ${:.4}", price_current);
+                println!("Tick:     {}", pool.tick_current_index);
+                println!("In range: {}", if in_range { "YES" } else { "NO -- needs rebalance" });
+                println!("Liquidity: {}", pool.liquidity);
+            }
         }
         Commands::Depth { pool } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
