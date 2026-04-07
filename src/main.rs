@@ -65,18 +65,19 @@ async fn main() -> Result<()> {
                 "orca" => {
                     use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                    let whirlpool_program =
-                        Pubkey::from_str(protocols::orca::WHIRLPOOL_PROGRAM_ID)?;
+                    let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
                     let mint_pubkey = Pubkey::from_str(mint)?;
                     let (position_pda, _) = Pubkey::find_program_address(
                         &[b"position", mint_pubkey.as_ref()],
                         &whirlpool_program,
                     );
 
-                    let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+                    let position_data =
+                        rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
                     let pos = protocols::orca::parse_position(&position_data)?;
 
-                    let pool_data = rpc.fetch_account_data(&pos.whirlpool.to_string())?;
+                    let pool_data =
+                        rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
                     let pool = protocols::orca::parse_pool(&pool_data)?;
 
                     use analytics::greeks::sqrt_q64_to_price;
@@ -155,18 +156,19 @@ async fn main() -> Result<()> {
                     display::table::print_position(&summary);
                 }
                 "raydium" => {
-                    let raydium_program =
-                        Pubkey::from_str(protocols::raydium::RAYDIUM_CLMM_PROGRAM_ID)?;
+                    let raydium_program = protocols::raydium::raydium_clmm_program_pubkey();
                     let mint_pubkey = Pubkey::from_str(mint)?;
                     let (position_pda, _) = Pubkey::find_program_address(
                         &[b"position", mint_pubkey.as_ref()],
                         &raydium_program,
                     );
 
-                    let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+                    let position_data =
+                        rpc.fetch_account_checked(&position_pda.to_string(), &raydium_program)?;
                     let pos = protocols::raydium::parse_position(&position_data)?;
 
-                    let pool_data = rpc.fetch_account_data(&pos.pool_id.to_string())?;
+                    let pool_data =
+                        rpc.fetch_account_checked(&pos.pool_id.to_string(), &raydium_program)?;
                     let pool = protocols::raydium::parse_pool(&pool_data)?;
 
                     let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
@@ -188,14 +190,15 @@ async fn main() -> Result<()> {
             use tokio_tungstenite::connect_async;
 
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
-            let whirlpool_program = Pubkey::from_str(protocols::orca::WHIRLPOOL_PROGRAM_ID)?;
+            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
             let (position_pda, _) = Pubkey::find_program_address(
                 &[b"position", mint_pubkey.as_ref()],
                 &whirlpool_program,
             );
 
-            let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+            let position_data =
+                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
             let pos = protocols::orca::parse_position(&position_data)?;
             let pool_addr = pos.whirlpool.to_string();
 
@@ -242,7 +245,7 @@ async fn main() -> Result<()> {
                 );
                 println!();
 
-                let pool_data = rpc.fetch_account_data(&pool_addr)?;
+                let pool_data = rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
                 let pool = protocols::orca::parse_pool(&pool_data)?;
 
                 let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
@@ -265,7 +268,8 @@ async fn main() -> Result<()> {
         }
         Commands::Depth { pool } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
-            let pool_data = rpc.fetch_account_data(pool)?;
+            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+            let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
 
             let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
@@ -302,7 +306,8 @@ async fn main() -> Result<()> {
         }
         Commands::Impact { pool, size } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
-            let pool_data = rpc.fetch_account_data(pool)?;
+            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+            let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
 
             let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
