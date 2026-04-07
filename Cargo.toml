@@ -30,6 +30,10 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Error handling
 anyhow = "1"
+thiserror = "1"
+
+# Config
+toml = "0.8"
 
 # Time (for watch command)
 chrono = "0.4"

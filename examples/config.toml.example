@@ -1,0 +1,22 @@
+# tick-liq runtime configuration example.
+#
+# Copy to `config.toml` and edit. Any field here can be overridden by the
+# corresponding environment variable (env always wins).
+#
+# IMPORTANT: keypair material (KEYPAIR_PATH, KEYPAIR_SEED) MUST come from
+# environment variables only — never put it in this file.
+
+# Solana JSON-RPC endpoint. Env: SOLANA_RPC_URL
+rpc_url = "https://api.mainnet-beta.solana.com"
+
+# Solana WebSocket endpoint. Env: SOLANA_WS_URL
+ws_url = "wss://api.mainnet-beta.solana.com"
+
+# Postgres / TimescaleDB connection string. Env: DATABASE_URL
+db_url = "postgres://tickliq:tickliq@localhost:5432/tickliq"
+
+# Drift Protocol gateway/API URL (optional). Env: DRIFT_API_URL
+# drift_api_url = "https://dlob.drift.trade"
+
+# Log level: error | warn | info | debug | trace. Env: LOG_LEVEL
+log_level = "info"
