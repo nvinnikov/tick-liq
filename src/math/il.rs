@@ -80,4 +80,38 @@ mod tests {
     fn test_il_zero_when_entry_unknown() {
         assert_eq!(compute_il(0.0, 150.0, 80.0, 120.0), 0.0);
     }
+
+    /// Regression test for BUG-qr9: price_lower/price_upper must be decimal-scaled
+    /// to the same unit as entry_price/price_current.
+    ///
+    /// SOL/USDC example: price_current ≈ $84.225, range ≈ [$75, $95].
+    /// With correct scaling (all in USD), IL is negative when price moved from entry.
+    /// With raw sqrt_q64 values (~0.084–0.096), both prices collapse to range
+    /// boundaries and IL returns ~0 (the bug).
+    #[test]
+    fn test_il_nonzero_with_scaled_range() {
+        // Simulated SOL/USDC watch loop values after fix (all decimal-scaled USD)
+        let entry_price = 85.122_f64;
+        let price_current = 84.225_f64;
+        let price_lower_scaled = 75.0_f64; // e.g. sqrt_q64_to_price(...) * 1000
+        let price_upper_scaled = 95.0_f64;
+
+        let il = compute_il(entry_price, price_current, price_lower_scaled, price_upper_scaled);
+        assert!(
+            il < 0.0,
+            "IL must be negative when price moved from entry: got {}",
+            il
+        );
+
+        // Demonstrate the bug: unscaled range (raw ~0.084–0.096) collapses IL to ~0
+        let price_lower_raw = 0.084_f64; // raw sqrt_q64_to_price output (no * 1000)
+        let price_upper_raw = 0.096_f64;
+        let il_bugged = compute_il(entry_price, price_current, price_lower_raw, price_upper_raw);
+        // Both entry and current are clamped to pb (upper boundary ≈ 0.31), yielding IL≈0
+        assert!(
+            il_bugged.abs() < 1e-6,
+            "Unscaled range should collapse IL to ~0 (bug reproduction): got {}",
+            il_bugged
+        );
+    }
 }
