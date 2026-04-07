@@ -4,7 +4,9 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 mod analytics;
+mod config;
 mod display;
+mod error;
 mod protocols;
 mod rpc;
 
