@@ -15,6 +15,10 @@ solana-sdk = "1.18"
 # Orca math
 orca_whirlpools_core = "2"
 
+# 256-bit integer for intermediate sqrt-price * amount products that
+# overflow u128. Already pulled in transitively by orca_whirlpools_core.
+ethnum = "1"
+
 # Serialization
 borsh = "0.10"
 serde = { version = "1", features = ["derive"] }
