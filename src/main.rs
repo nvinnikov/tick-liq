@@ -152,6 +152,32 @@ async fn main() -> Result<()> {
 
                     display::table::print_position(&summary);
                 }
+                "raydium" => {
+                    let raydium_program = Pubkey::from_str(protocols::raydium::RAYDIUM_CLMM_PROGRAM_ID)?;
+                    let mint_pubkey = Pubkey::from_str(mint)?;
+                    let (position_pda, _) = Pubkey::find_program_address(
+                        &[b"position", mint_pubkey.as_ref()],
+                        &raydium_program,
+                    );
+
+                    let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+                    let pos = protocols::raydium::parse_position(&position_data)?;
+
+                    let pool_data = rpc.fetch_account_data(&pos.pool_id.to_string())?;
+                    let pool = protocols::raydium::parse_pool(&pool_data)?;
+
+                    let to_price = |sqrt_q64: u128| -> f64 {
+                        let s = sqrt_q64 as f64 / (1u128 << 64) as f64;
+                        s * s
+                    };
+                    let price_current = to_price(pool.sqrt_price_x64);
+
+                    println!("Raydium Position: {}", position_pda);
+                    println!("Pool:     {}", pos.pool_id);
+                    println!("Price:    ${:.4}", price_current);
+                    println!("Tick:     {} (range: {} -- {})", pool.tick_current, pos.tick_lower_index, pos.tick_upper_index);
+                    println!("Liquidity: {}", pos.liquidity);
+                }
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
