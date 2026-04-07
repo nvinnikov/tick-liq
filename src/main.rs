@@ -830,12 +830,16 @@ async fn main() -> Result<()> {
                     Err(_) => 0.0,
                 };
 
+                // BUG-qr9 fix: apply the same decimal scaling as price_current (line 770)
+                // so all four compute_il arguments share the same unit space (decimal-scaled USD).
+                // Without this, price_lower/price_upper are raw (~0.084) while entry/current
+                // are in dollars (~84), causing clamp to collapse both to the same boundary → IL ≈ 0.
                 let price_lower = analytics::greeks::sqrt_q64_to_price(
                     orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_lower_index),
-                );
+                ) * 10f64.powi(9 - 6);
                 let price_upper = analytics::greeks::sqrt_q64_to_price(
                     orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_upper_index),
-                );
+                ) * 10f64.powi(9 - 6);
                 let il_fraction = analytics::pnl::compute_il(
                     entry_price,
                     price_current,
