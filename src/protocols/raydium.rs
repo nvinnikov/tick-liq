@@ -26,7 +26,7 @@ pub struct RaydiumPool {
     pub mint_decimals_1: u8,
     pub tick_spacing: u16,
     pub liquidity: u128,
-    pub sqrt_price_x64: u128,   // same Q64.64 format as Orca
+    pub sqrt_price_x64: u128, // same Q64.64 format as Orca
     pub tick_current: i32,
     // remaining fields omitted
 }
