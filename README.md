@@ -140,6 +140,32 @@ This corresponds to the milestones in the original design doc: [`docs/superpower
 
 Known limitations: depth/impact use pool-level liquidity only — no tick-array walk yet, so results degrade for trades that cross tick boundaries. Token decimals are hardcoded (9/6) in the Orca position view.
 
+## Local database (PostgreSQL + TimescaleDB)
+
+The storage layer (positions, pool ticks, P&L history, rebalance events) lives in PostgreSQL with the TimescaleDB extension. SQL migrations are in [`migrations/`](migrations/) and are managed with [`sqlx-cli`](https://crates.io/crates/sqlx-cli).
+
+### Spin up a local instance
+
+```bash
+docker run -d --name tick-liq-db \
+  -e POSTGRES_PASSWORD=tickliq \
+  -e POSTGRES_DB=tickliq \
+  -p 5432:5432 \
+  timescale/timescaledb:latest-pg16
+
+export DATABASE_URL=postgres://postgres:tickliq@localhost:5432/tickliq
+```
+
+### Apply migrations
+
+```bash
+cargo install sqlx-cli --no-default-features --features native-tls,postgres
+sqlx migrate run               # apply all up migrations
+sqlx migrate revert            # roll back the most recent migration
+```
+
+Migrations are timestamp-prefixed and ship as paired `*.up.sql` / `*.down.sql` files. The `pool_ticks` and `pnl_history` tables are TimescaleDB hypertables partitioned on `ts`.
+
 ## Roadmap
 
 - [`CLAUDE.md`](CLAUDE.md) — long-term vision: full LP manager with rebalancing engine, Drift perp hedging, and TimescaleDB-backed P&L history.
