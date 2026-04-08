@@ -9,6 +9,7 @@ mod display;
 mod math;
 mod protocols;
 mod rpc;
+mod strategy;
 
 #[derive(Parser)]
 #[command(name = "lp-inspect")]
@@ -55,6 +56,29 @@ enum Commands {
         pool: String,
         #[arg(long)]
         size: f64,
+    },
+    /// Strategy-layer operations
+    Strategy {
+        #[command(subcommand)]
+        command: StrategyCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum StrategyCommands {
+    /// Evaluate rebalance signal for a position
+    Check {
+        /// Position NFT mint address
+        mint: String,
+        /// Rebalance when price is within this many ticks of a range boundary
+        #[arg(long, default_value_t = 10)]
+        near_edge_ticks: i32,
+        /// Minimum net P&L (USD) required before rebalancing
+        #[arg(long, default_value_t = 0.0)]
+        min_pnl: f64,
+        /// Entry price for IL calculation (optional)
+        #[arg(long)]
+        entry_price: Option<f64>,
     },
 }
 
@@ -384,6 +408,109 @@ async fn main() -> Result<()> {
                 println!("Price impact:  > liquidity available");
             }
         }
+        Commands::Strategy { command } => match command {
+            StrategyCommands::Check {
+                mint,
+                near_edge_ticks,
+                min_pnl,
+                entry_price,
+            } => {
+                use orca_whirlpools_core::tick_index_to_sqrt_price;
+
+                let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+                let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+                let mint_pubkey = Pubkey::from_str(mint)?;
+                let (position_pda, _) = Pubkey::find_program_address(
+                    &[b"position", mint_pubkey.as_ref()],
+                    &whirlpool_program,
+                );
+
+                let position_data =
+                    rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
+                let pos = protocols::orca::parse_position(&position_data)?;
+
+                let pool_data =
+                    rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
+                let pool = protocols::orca::parse_pool(&pool_data)?;
+
+                let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+                let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+
+                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
+                let price_lower = analytics::greeks::sqrt_q64_to_price(
+                    tick_index_to_sqrt_price(pos.tick_lower_index),
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    tick_index_to_sqrt_price(pos.tick_upper_index),
+                );
+
+                let amounts = analytics::amounts::compute_token_amounts(
+                    pos.liquidity,
+                    pool.sqrt_price,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                )?;
+
+                let accrued_a = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_a,
+                    pos.fee_growth_checkpoint_a,
+                    pos.liquidity,
+                );
+                let accrued_b = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_b,
+                    pos.fee_growth_checkpoint_b,
+                    pos.liquidity,
+                );
+
+                let scale_a = 10f64.powi(decimals_a as i32);
+                let scale_b = 10f64.powi(decimals_b as i32);
+
+                let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
+                    + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+
+                let price_entry = entry_price.unwrap_or(0.0);
+                let il_fraction = analytics::pnl::compute_il(
+                    price_entry,
+                    price_current,
+                    price_lower,
+                    price_upper,
+                );
+                let position_value = amounts.amount_a as f64 / scale_a * price_current
+                    + amounts.amount_b as f64 / scale_b;
+                let il_usd = il_fraction * position_value;
+                let net_pnl_usd = fees_usd + il_usd;
+
+                let config = strategy::RebalanceConfig {
+                    rebalance_out_of_range: true,
+                    near_edge_ticks: *near_edge_ticks,
+                    min_net_pnl_usd: *min_pnl,
+                };
+
+                let decision = strategy::should_rebalance(
+                    pool.tick_current_index,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                    net_pnl_usd,
+                    &config,
+                );
+
+                println!("Position:     {}", position_pda);
+                println!("Tick current: {}", pool.tick_current_index);
+                println!(
+                    "Range:        [{}, {}]",
+                    pos.tick_lower_index, pos.tick_upper_index
+                );
+                println!("Net P&L:      ${:.2}", net_pnl_usd);
+                match decision {
+                    strategy::RebalanceDecision::Hold { reason } => {
+                        println!("Decision:     HOLD ({})", reason);
+                    }
+                    strategy::RebalanceDecision::Rebalance { reason } => {
+                        println!("Decision:     REBALANCE ({})", reason);
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
