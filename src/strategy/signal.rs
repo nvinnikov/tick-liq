@@ -61,9 +61,11 @@ pub struct MarketTick {
     pub upper_price: f64,
     /// Most recent P&L snapshot for the active position.
     pub pnl: PnlSnapshot,
-    /// Fees earned over the entire life of the active position so far,
-    /// in quote units. Used together with the active-window duration to
-    /// compute fees-per-day.
+    /// Fees earned **since `window_started_at`** (i.e. window-scoped,
+    /// not lifetime), in quote units. Used together with the active-
+    /// window duration to compute fees-per-day. The caller must reset
+    /// this accumulator when feeding the first tick after a rebalance —
+    /// the engine tracks the window start time but not the fees.
     pub fees_earned_quote: f64,
     /// If `true`, the caller is requesting a manual rebalance. Lowest
     /// priority of the four triggers.
