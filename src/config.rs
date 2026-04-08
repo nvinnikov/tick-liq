@@ -8,7 +8,8 @@
 //! variables only** — never from TOML — to avoid accidental check-ins.
 //!
 //! Required fields: `rpc_url`, `ws_url`, `db_url`.
-//! Optional fields: `drift_api_url`, `log_level` (defaults to `"info"`).
+//! Optional fields: `drift_api_url`, `log_level` (defaults to `"info"`),
+//! `pyth_program_id` (defaults to the Pyth mainnet program id).
 //!
 //! Env var names:
 //!   - `SOLANA_RPC_URL`
@@ -16,6 +17,7 @@
 //!   - `DATABASE_URL`
 //!   - `DRIFT_API_URL`
 //!   - `LOG_LEVEL`
+//!   - `PYTH_PROGRAM_ID`
 //!   - `KEYPAIR_PATH`           (env-only)
 //!   - `KEYPAIR_SEED`           (env-only)
 
@@ -28,8 +30,13 @@ const ENV_WS_URL: &str = "SOLANA_WS_URL";
 const ENV_DB_URL: &str = "DATABASE_URL";
 const ENV_DRIFT_API_URL: &str = "DRIFT_API_URL";
 const ENV_LOG_LEVEL: &str = "LOG_LEVEL";
+const ENV_PYTH_PROGRAM_ID: &str = "PYTH_PROGRAM_ID";
 const ENV_KEYPAIR_PATH: &str = "KEYPAIR_PATH";
 const ENV_KEYPAIR_SEED: &str = "KEYPAIR_SEED";
+
+/// Default Pyth oracle program id on Solana mainnet-beta.
+/// Source: <https://docs.pyth.network/price-feeds/contract-addresses/solana>
+pub const DEFAULT_PYTH_PROGRAM_ID: &str = "FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH";
 
 /// Fully-resolved runtime configuration.
 #[allow(dead_code)]
@@ -40,6 +47,11 @@ pub struct Config {
     pub db_url: String,
     pub drift_api_url: Option<String>,
     pub log_level: String,
+    /// Pyth oracle program id (as base58). Defaults to the mainnet-beta
+    /// program id in [`DEFAULT_PYTH_PROGRAM_ID`]. Callers that point at a
+    /// Pyth deployment on another cluster should override via
+    /// `PYTH_PROGRAM_ID` or the `pyth_program_id` TOML key.
+    pub pyth_program_id: String,
     /// Path to a Solana keypair JSON file. Sourced from `KEYPAIR_PATH` env only.
     pub keypair_path: Option<String>,
     /// Raw keypair seed (hex/base58). Sourced from `KEYPAIR_SEED` env only.
@@ -55,6 +67,7 @@ struct FileConfig {
     db_url: Option<String>,
     drift_api_url: Option<String>,
     log_level: Option<String>,
+    pyth_program_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -94,6 +107,9 @@ impl Config {
         let log_level = env(ENV_LOG_LEVEL)
             .or(file.log_level)
             .unwrap_or_else(|| "info".to_string());
+        let pyth_program_id = env(ENV_PYTH_PROGRAM_ID)
+            .or(file.pyth_program_id)
+            .unwrap_or_else(|| DEFAULT_PYTH_PROGRAM_ID.to_string());
 
         // Keypair material: env-only.
         let keypair_path = env(ENV_KEYPAIR_PATH);
@@ -105,6 +121,7 @@ impl Config {
             db_url,
             drift_api_url,
             log_level,
+            pyth_program_id,
             keypair_path,
             keypair_seed,
         })
@@ -144,6 +161,7 @@ mod tests {
         assert_eq!(cfg.ws_url, "wss://ws.example");
         assert_eq!(cfg.db_url, "postgres://localhost/x");
         assert_eq!(cfg.log_level, "info");
+        assert_eq!(cfg.pyth_program_id, DEFAULT_PYTH_PROGRAM_ID);
         assert!(cfg.drift_api_url.is_none());
         assert!(cfg.keypair_path.is_none());
         assert!(cfg.keypair_seed.is_none());
@@ -157,6 +175,7 @@ mod tests {
             db_url: Some("postgres://file".into()),
             drift_api_url: Some("https://file-drift".into()),
             log_level: Some("warn".into()),
+            pyth_program_id: None,
         };
         let env = env_from(HashMap::from([(ENV_RPC_URL, "https://env-rpc")]));
         let cfg = Config::from_sources(Some(file), env).unwrap();
@@ -196,6 +215,38 @@ mod tests {
         let err = Config::from_sources(None, env).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("db_url"), "got: {msg}");
+    }
+
+    #[test]
+    fn pyth_program_id_env_overrides_default() {
+        let env = env_from(HashMap::from([
+            (ENV_RPC_URL, "https://rpc"),
+            (ENV_WS_URL, "wss://ws"),
+            (ENV_DB_URL, "postgres://x"),
+            (
+                ENV_PYTH_PROGRAM_ID,
+                "CustomPythProgramId1111111111111111111111111",
+            ),
+        ]));
+        let cfg = Config::from_sources(None, env).unwrap();
+        assert_eq!(
+            cfg.pyth_program_id,
+            "CustomPythProgramId1111111111111111111111111"
+        );
+    }
+
+    #[test]
+    fn pyth_program_id_file_value_used_when_env_missing() {
+        let file = FileConfig {
+            rpc_url: Some("https://rpc".into()),
+            ws_url: Some("wss://ws".into()),
+            db_url: Some("postgres://x".into()),
+            pyth_program_id: Some("FilePythProgramId".into()),
+            ..Default::default()
+        };
+        let env = env_from(HashMap::new());
+        let cfg = Config::from_sources(Some(file), env).unwrap();
+        assert_eq!(cfg.pyth_program_id, "FilePythProgramId");
     }
 
     #[test]
