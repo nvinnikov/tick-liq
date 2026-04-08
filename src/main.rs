@@ -320,10 +320,38 @@ async fn main() -> Result<()> {
                 );
             }
 
+            // Fetch surrounding tick arrays and render a depth histogram.
+            let whirlpool_pubkey = Pubkey::from_str(pool)?;
+            let tick_arrays = protocols::orca::fetch_tick_arrays(
+                &rpc,
+                &whirlpool_pubkey,
+                pool_state.tick_current_index,
+                pool_state.tick_spacing,
+            )?;
+
+            let mut tick_deltas: Vec<(i32, i128)> = Vec::new();
+            for ta in &tick_arrays {
+                for (i, tick) in ta.ticks.iter().enumerate() {
+                    if tick.initialized {
+                        let tick_index = ta.start_tick_index
+                            + (i as i32) * (pool_state.tick_spacing as i32);
+                        tick_deltas.push((tick_index, tick.liquidity_net));
+                    }
+                }
+            }
+
             println!();
-            println!(
-                "Note: uses pool-level liquidity. Tick-array depth map coming in a future update."
+            println!("Depth Map  ({} initialized ticks across {} arrays)", tick_deltas.len(), tick_arrays.len());
+            println!("{}", "─".repeat(70));
+
+            let distribution = analytics::depth::build_distribution(
+                &tick_deltas,
+                pool_state.liquidity,
+                pool_state.tick_current_index,
+                pool_state.tick_spacing as i32,
+                8,
             );
+            display::table::print_depth_histogram(&distribution, price_current);
         }
         Commands::Impact { pool, size } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
