@@ -40,10 +40,12 @@ use anyhow::{bail, Result};
 /// LP position Greeks at a given price.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Greeks {
-    /// `∂V / ∂P` — rate of change of position value per unit price increase.
-    /// Negative when in range (LP is short vol). Zero out of range.
+    /// `∂x / ∂P` — rate of change of the *amount of token x held* per unit
+    /// price increase (inventory delta, not value delta). Non-positive in
+    /// range (LP auto-sells base into a rising market). Zero out of range.
     pub delta: f64,
-    /// `∂²V / ∂P²` — convexity. Positive in range. Zero out of range.
+    /// `∂²x / ∂P²` — second derivative of inventory. Non-negative in range.
+    /// Zero out of range.
     pub gamma: f64,
 }
 
