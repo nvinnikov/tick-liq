@@ -1,6 +1,49 @@
 use crate::analytics::amounts::TokenAmounts;
+use crate::analytics::depth::LiquidityLevel;
 use crate::analytics::greeks::Greeks;
 use crate::analytics::pnl::PnlResult;
+
+/// Render an ASCII histogram of a liquidity distribution. The bar for the
+/// bucket containing `current_price` is marked with `*`.
+pub fn print_depth_histogram(levels: &[LiquidityLevel], current_price: f64) {
+    if levels.is_empty() {
+        println!("  (no tick array data available)");
+        return;
+    }
+    let max_l = levels.iter().map(|l| l.liquidity).max().unwrap_or(0);
+    if max_l == 0 {
+        println!("  (all buckets empty)");
+        return;
+    }
+    const WIDTH: usize = 40;
+
+    // Find the bucket closest to current_price.
+    let current_idx = levels
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            (a.price - current_price)
+                .abs()
+                .partial_cmp(&(b.price - current_price).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    for (i, level) in levels.iter().enumerate() {
+        let bar_len = ((level.liquidity as f64 / max_l as f64) * WIDTH as f64).round() as usize;
+        let bar = "█".repeat(bar_len);
+        let marker = if i == current_idx { "*" } else { " " };
+        println!(
+            "  {} ${:>10.4}  {:<width$}  {:.2}M",
+            marker,
+            level.price,
+            bar,
+            level.liquidity as f64 / 1e6,
+            width = WIDTH
+        );
+    }
+}
 
 // Uses owned Strings to avoid lifetime complexity (no &'a str).
 pub struct PositionSummary {
