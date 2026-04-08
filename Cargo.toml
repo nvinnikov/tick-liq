@@ -28,6 +28,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+async-trait = "0.1"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -46,6 +47,9 @@ chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# HTTP client for CEX price polls
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
 # Storage (sqlx 0.6 + Postgres/TimescaleDB).
 # We pin sqlx 0.6 (not 0.7+) because 0.7+ unconditionally depends on
 # sqlx-mysql, whose rsa→zeroize chain conflicts with solana-client 1.18's
@@ -56,6 +60,7 @@ bigdecimal = "0.3"
 
 [dev-dependencies]
 proptest = "1"
+wiremock = "0.5"
 
 [features]
 # Enable integration tests that require a live Postgres+TimescaleDB.
