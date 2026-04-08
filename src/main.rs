@@ -33,6 +33,10 @@ enum Commands {
         /// Protocol: orca or raydium
         #[arg(long, default_value = "orca")]
         protocol: String,
+        /// Entry price (token A denominated in token B) when position was opened.
+        /// Used to compute impermanent loss. If omitted, IL will show 0.
+        #[arg(long)]
+        entry_price: Option<f64>,
     },
     /// Watch a position in real-time
     Watch {
@@ -59,7 +63,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Position { mint, protocol } => {
+        Commands::Position { mint, protocol, entry_price } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
 
             match protocol.as_str() {
@@ -80,6 +84,12 @@ async fn main() -> Result<()> {
                     let pool_data =
                         rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
                     let pool = protocols::orca::parse_pool(&pool_data)?;
+
+                    // Fetch real decimals and symbols from chain.
+                    let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+                    let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+                    let symbol_a = rpc.fetch_token_symbol(&pool._token_mint_a);
+                    let symbol_b = rpc.fetch_token_symbol(&pool._token_mint_b);
 
                     use analytics::greeks::sqrt_q64_to_price;
                     let price_current = sqrt_q64_to_price(pool.sqrt_price);
@@ -121,13 +131,21 @@ async fn main() -> Result<()> {
                         pos.liquidity,
                     );
 
-                    let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / 1e9 * price_current
-                        + (pos.fee_owed_b + accrued_b) as f64 / 1e6;
+                    let scale_a = 10f64.powi(decimals_a as i32);
+                    let scale_b = 10f64.powi(decimals_b as i32);
 
-                    let il_fraction =
-                        analytics::pnl::compute_il(0.0, price_current, price_lower, price_upper);
-                    let position_value = amounts.amount_a as f64 / 1e9 * price_current
-                        + amounts.amount_b as f64 / 1e6;
+                    let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
+                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+
+                    let price_entry = entry_price.unwrap_or(0.0);
+                    let il_fraction = analytics::pnl::compute_il(
+                        price_entry,
+                        price_current,
+                        price_lower,
+                        price_upper,
+                    );
+                    let position_value = amounts.amount_a as f64 / scale_a * price_current
+                        + amounts.amount_b as f64 / scale_b;
                     let il_usd = il_fraction * position_value;
 
                     let pnl = analytics::pnl::PnlResult {
@@ -146,10 +164,10 @@ async fn main() -> Result<()> {
                         in_range,
                         range_pct,
                         amounts,
-                        decimals_a: 9,
-                        decimals_b: 6,
-                        symbol_a: "A".to_string(),
-                        symbol_b: "B".to_string(),
+                        decimals_a,
+                        decimals_b,
+                        symbol_a,
+                        symbol_b,
                         pnl,
                         greeks,
                     };
