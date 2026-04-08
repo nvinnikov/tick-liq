@@ -63,7 +63,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Position { mint, protocol, entry_price } => {
+        Commands::Position {
+            mint,
+            protocol,
+            entry_price,
+        } => {
             let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
 
             match protocol.as_str() {
@@ -246,15 +250,14 @@ async fn main() -> Result<()> {
                 );
                 println!();
 
-                let pool_data = match rpc_inner
-                    .fetch_account_checked(&pool_addr_clone, &whirlpool_program)
-                {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch pool data: {}", e);
-                        return;
-                    }
-                };
+                let pool_data =
+                    match rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch pool data: {}", e);
+                            return;
+                        }
+                    };
                 let pool = match protocols::orca::parse_pool(&pool_data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -270,7 +273,14 @@ async fn main() -> Result<()> {
                 println!("Pool:      {}", pool_addr_clone);
                 println!("Price:     ${:.4}", price_current);
                 println!("Tick:      {}", pool.tick_current_index);
-                println!("In range:  {}", if in_range { "YES" } else { "NO -- needs rebalance" });
+                println!(
+                    "In range:  {}",
+                    if in_range {
+                        "YES"
+                    } else {
+                        "NO -- needs rebalance"
+                    }
+                );
                 println!("Liquidity: {}", pool.liquidity);
             });
 
