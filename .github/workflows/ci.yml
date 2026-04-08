@@ -29,6 +29,21 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Share the cache across all jobs in this workflow rather than
+          # cutting a new cache per run — registry/target are largely the
+          # same between PRs and a shared key gives much higher hit rates.
+          shared-key: "ci-stable"
+          # Persist the cache even when a build/test/clippy step fails so
+          # the *next* run starts warm. Without this, every red CI run
+          # throws away its compilation cache.
+          cache-on-failure: "true"
+          # Restrict the target cache to crates we actually depend on
+          # rather than the entire registry — keeps the cache slim.
+          cache-targets: "true"
+          # Include the workflow file hash in the cache key so changes
+          # to ci.yml (e.g. new flags) automatically bust the cache.
+          key: ${{ hashFiles('.github/workflows/ci.yml') }}
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
