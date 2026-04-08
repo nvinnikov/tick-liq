@@ -1,0 +1,193 @@
+{
+  "_comment": "Golden reference vectors for tick-liq CLMM math (F9). See docs/math-validation.md for derivation and regeneration.",
+  "amounts_vectors": [
+    {
+      "description": "A1: zero liquidity -> both amounts zero",
+      "liquidity": 0,
+      "tick_current": 0,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 0,
+      "expected_amount_b": 0,
+      "tolerance_abs": 0
+    },
+    {
+      "description": "A2: below range -> amount_b == 0, amount_a > 0",
+      "liquidity": 1000000000,
+      "tick_current": -200,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 9999541,
+      "expected_amount_b": 0,
+      "tolerance_abs": 50
+    },
+    {
+      "description": "A3: above range -> amount_a == 0, amount_b > 0",
+      "liquidity": 1000000000,
+      "tick_current": 200,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 0,
+      "expected_amount_b": 9999541,
+      "tolerance_abs": 50
+    },
+    {
+      "description": "A4: in range, symmetric about tick 0 -> amount_a == amount_b (modulo Q64.64 rounding)",
+      "liquidity": 1000000000,
+      "tick_current": 0,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 4987272,
+      "expected_amount_b": 4987272,
+      "tolerance_abs": 50
+    },
+    {
+      "description": "A5: tight in-range near tick 0",
+      "liquidity": 1000000000,
+      "tick_current": 0,
+      "tick_lower": -10,
+      "tick_upper": 10,
+      "expected_amount_a": 499850,
+      "expected_amount_b": 499850,
+      "tolerance_abs": 20
+    },
+    {
+      "description": "A6: price exactly at lower bound (in-range branch) -> amount_b == 0",
+      "liquidity": 1000000000,
+      "tick_current": -100,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 9999541,
+      "expected_amount_b": 0,
+      "tolerance_abs": 50
+    },
+    {
+      "description": "A7: price exactly at upper bound -> falls into above-range branch (sqrt_price >= sqrt_upper)",
+      "liquidity": 1000000000,
+      "tick_current": 100,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_amount_a": 0,
+      "expected_amount_b": 9999541,
+      "tolerance_abs": 50
+    }
+  ],
+  "il_vectors": [
+    {
+      "description": "I1: IL at entry price is zero",
+      "price_entry": 100.0,
+      "price_current": 100.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": 0.0,
+      "tolerance_abs": 1e-12
+    },
+    {
+      "description": "I2: IL is zero when entry price unknown (0.0)",
+      "price_entry": 0.0,
+      "price_current": 150.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": 0.0,
+      "tolerance_abs": 0.0
+    },
+    {
+      "description": "I3: price drops to lower bound, entry at midpoint",
+      "price_entry": 100.0,
+      "price_current": 80.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": -0.00155402,
+      "tolerance_abs": 1e-5
+    },
+    {
+      "description": "I4: price rises to upper bound, entry at midpoint",
+      "price_entry": 100.0,
+      "price_current": 120.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": -0.00104520,
+      "tolerance_abs": 1e-5
+    },
+    {
+      "description": "I5: price far below range -> clamped to lower, same IL as I3",
+      "price_entry": 100.0,
+      "price_current": 10.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": -0.00155402,
+      "tolerance_abs": 1e-5
+    },
+    {
+      "description": "I6: price far above range -> clamped to upper, same IL as I4",
+      "price_entry": 100.0,
+      "price_current": 1000.0,
+      "price_lower": 80.0,
+      "price_upper": 120.0,
+      "expected_il": -0.00104520,
+      "tolerance_abs": 1e-5
+    }
+  ],
+  "greeks_vectors": [
+    {
+      "description": "G1: in range at tick 0 (P=1), L=1e6, symmetric wide range",
+      "liquidity": 1000000,
+      "tick_current": 0,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_delta": -500000.0,
+      "expected_gamma": 500000.0,
+      "tolerance_rel": 1e-9
+    },
+    {
+      "description": "G2: above range -> delta=0, gamma=0",
+      "liquidity": 1000000,
+      "tick_current": 200,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_delta": 0.0,
+      "expected_gamma": 0.0,
+      "tolerance_rel": 0.0
+    },
+    {
+      "description": "G3: below range -> delta=0, gamma=0",
+      "liquidity": 1000000,
+      "tick_current": -200,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_delta": 0.0,
+      "expected_gamma": 0.0,
+      "tolerance_rel": 0.0
+    },
+    {
+      "description": "G4: zero liquidity -> delta=0, gamma=0",
+      "liquidity": 0,
+      "tick_current": 0,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_delta": 0.0,
+      "expected_gamma": 0.0,
+      "tolerance_rel": 0.0
+    },
+    {
+      "description": "G5: doubling liquidity doubles |delta| and gamma (L=2e6 at tick 0)",
+      "liquidity": 2000000,
+      "tick_current": 0,
+      "tick_lower": -100,
+      "tick_upper": 100,
+      "expected_delta": -1000000.0,
+      "expected_gamma": 1000000.0,
+      "tolerance_rel": 1e-9
+    },
+    {
+      "description": "G6: wider range, same P=1 -> delta/gamma unchanged (depend only on P and L)",
+      "liquidity": 1000000,
+      "tick_current": 0,
+      "tick_lower": -1000,
+      "tick_upper": 1000,
+      "expected_delta": -500000.0,
+      "expected_gamma": 500000.0,
+      "tolerance_rel": 1e-9
+    }
+  ]
+}
