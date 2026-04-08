@@ -42,15 +42,16 @@ lp-inspect [--rpc-url <URL>] <COMMAND>
 ### `position` — full P&L breakdown
 
 ```
-lp-inspect position <MINT> [--protocol orca|raydium]
+lp-inspect position <MINT> [--protocol orca|raydium] [--entry-price <PRICE>]
 ```
 
-| Argument     | Default | Description                      |
-| ------------ | ------- | -------------------------------- |
-| `<MINT>`     | —       | Position NFT mint address        |
-| `--protocol` | `orca`  | Protocol: `orca` or `raydium`    |
+| Argument        | Default | Description                                                |
+| --------------- | ------- | ---------------------------------------------------------- |
+| `<MINT>`        | —       | Position NFT mint address                                  |
+| `--protocol`    | `orca`  | Protocol: `orca` or `raydium`                              |
+| `--entry-price` | —       | Entry price in quote/base (USD). Required for accurate IL. |
 
-Fetches the position and its pool on-chain, then prints: pool metadata, current vs. range price, in-range status, token amounts, accrued fees (USD), impermanent loss, net P&L, and Greeks (delta, gamma).
+Fetches the position and its pool on-chain, then prints: pool metadata, current vs. range price, in-range status, token amounts, accrued fees (USD), impermanent loss, net P&L, and Greeks (delta, gamma). Pass `--entry-price` to compute IL relative to your actual open price; without it IL is reported as 0.
 
 Raydium support is partial — prints pool address, price, tick, and liquidity only.
 
