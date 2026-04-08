@@ -48,6 +48,23 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
+      - name: Check Cargo.lock is up to date
+        run: |
+          if ! cargo metadata --locked --format-version 1 >/dev/null 2>&1; then
+            echo "::error::Cargo.lock is stale (out of sync with Cargo.toml)."
+            echo ""
+            echo "Someone changed Cargo.toml without committing the updated Cargo.lock."
+            echo "This breaks every --locked build in CI."
+            echo ""
+            echo "To fix locally:"
+            echo "  cargo generate-lockfile   # or just 'cargo build'"
+            echo "  git add Cargo.lock"
+            echo "  git commit --amend --no-edit   # or a new commit"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "Cargo.lock is in sync with Cargo.toml."
+
       - name: cargo build
         run: cargo build --all-targets --locked
 
