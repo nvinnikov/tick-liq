@@ -4,3 +4,4 @@
 pub mod hedge;
 pub mod rebalance;
 pub mod tx;
+pub mod whirlpool_tx;
