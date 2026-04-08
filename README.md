@@ -1,13 +1,26 @@
 # tick-liq
 
-`lp-inspect` is a read-only CLI for inspecting concentrated-liquidity (CLMM) positions on Solana. It parses Orca Whirlpool positions (with partial Raydium CLMM support), prints a real-time P&L / Greeks breakdown, watches a pool over WebSocket, and answers depth and price-impact questions against on-chain pool state.
+Automated LP (Liquidity Provider) manager for concentrated-liquidity (CLMM) pools on Solana. Inspects Orca Whirlpool and Raydium CLMM positions, computes real-time P&L / Greeks / IL, watches pools over WebSocket, evaluates rebalance signals, and generates dry-run execution plans.
 
-This binary is the first slice of a larger automated LP manager — see [`CLAUDE.md`](CLAUDE.md) for the broader vision (rebalancing engine, perp hedging, TimescaleDB-backed history).
+## Architecture
+
+```
+src/
+├── math/        Pure Rust CLMM math — zero external deps (IL, greeks, amounts, impact, sqrt_price)
+├── protocols/   Borsh deserialization for Orca Whirlpool + Raydium CLMM, TickArray PDAs
+├── analytics/   Thin orchestration over math/ + protocols/
+├── data/        WebSocket pool subscription with reconnect + ping/pong
+├── strategy/    Rebalance signal generator (pure logic, no Solana deps)
+├── execution/   Dry-run rebalance planner + Drift hedge size estimator
+├── storage/     sqlx + TimescaleDB schema scaffold (positions, pool_ticks, pnl_history)
+├── display/     Formatted CLI output + ASCII liquidity histogram
+└── rpc.rs       Solana RPC client with owner verification
+```
 
 ## Prerequisites
 
 - **Rust toolchain** via [rustup](https://rustup.rs/) (stable, edition 2021)
-- **A Solana RPC URL.** A public endpoint works for read-only inspection; a private RPC (Helius, Triton, QuickNode) is recommended for `watch` — public endpoints rate-limit WebSocket subscriptions aggressively.
+- **Solana RPC URL** — public endpoint works for read-only commands; private RPC (Helius, Triton, QuickNode) recommended for `watch` (public endpoints aggressively rate-limit WebSocket)
 
 ## Installation
 
@@ -15,28 +28,25 @@ This binary is the first slice of a larger automated LP manager — see [`CLAUDE
 git clone https://github.com/nvinnikov/tick-liq.git
 cd tick-liq
 cargo build --release
+# Binary: target/release/lp-inspect
 ```
-
-The binary is produced at `target/release/lp-inspect`.
 
 ## Configuration
 
-| Variable         | Default                         | Purpose                                                                                             |
-| ---------------- | ------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | HTTP RPC endpoint. `watch` derives the WebSocket URL by swapping `https://` → `wss://` automatically. |
-
-You can also pass `--rpc-url <URL>` on the command line to override the environment variable for any single invocation.
+| Variable               | Default                         | Purpose |
+| ---------------------- | ------------------------------- | ------- |
+| `SOLANA_RPC_URL`       | `https://api.devnet.solana.com` | HTTP RPC. `watch` derives the WS URL automatically (`https://` → `wss://`). |
+| `DATABASE_URL`         | —                               | Postgres connection string for `db migrate`. |
+| `LP_INSPECTOR_KEYPAIR` | —                               | Base58 private key. Required by `rebalance` and `hedge` (env-only, never a file). |
 
 ```bash
-export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<YOUR_KEY>
+export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<KEY>
 ```
 
 ## Commands
 
-All subcommands share the global `--rpc-url` flag:
-
 ```
-lp-inspect [--rpc-url <URL>] <COMMAND>
+lp-inspect [--rpc-url <URL>] [--db-url <URL>] <COMMAND>
 ```
 
 ### `position` — full P&L breakdown
@@ -45,56 +55,70 @@ lp-inspect [--rpc-url <URL>] <COMMAND>
 lp-inspect position <MINT> [--protocol orca|raydium] [--entry-price <PRICE>]
 ```
 
-| Argument        | Default | Description                                                |
-| --------------- | ------- | ---------------------------------------------------------- |
-| `<MINT>`        | —       | Position NFT mint address                                  |
-| `--protocol`    | `orca`  | Protocol: `orca` or `raydium`                              |
-| `--entry-price` | —       | Entry price in quote/base (USD). Required for accurate IL. |
+Fetches position + pool on-chain. Prints: pool metadata, current vs. range price, in-range status, real token amounts (decimals from chain), accrued fees (USD), impermanent loss, net P&L, Greeks (delta, gamma). Pass `--entry-price` for accurate IL; omit to see fees only.
 
-Fetches the position and its pool on-chain, then prints: pool metadata, current vs. range price, in-range status, token amounts, accrued fees (USD), impermanent loss, net P&L, and Greeks (delta, gamma). Pass `--entry-price` to compute IL relative to your actual open price; without it IL is reported as 0.
-
-Raydium support is partial — prints pool address, price, tick, and liquidity only.
+Raydium support is partial — pool address, price, tick, liquidity only.
 
 ```bash
-./target/release/lp-inspect --rpc-url "$SOLANA_RPC_URL" position 4xj... --protocol orca
-./target/release/lp-inspect --rpc-url "$SOLANA_RPC_URL" position 4xj... --protocol raydium
+lp-inspect position 4xj... --entry-price 150.50
+lp-inspect position 4xj... --protocol raydium
 ```
 
-### `watch` — live pool subscription (Orca only)
+### `watch` — live pool subscription (Orca)
 
 ```
 lp-inspect watch <MINT>
 ```
 
-Resolves the position's pool, opens a WebSocket `accountSubscribe` to that pool, and re-prints price / tick / in-range status on every on-chain update. Press Ctrl+C to stop.
+Opens `accountSubscribe` WebSocket to the position's pool. Re-prints price / tick / in-range on every update. Exponential-backoff reconnect + ping/pong. Ctrl+C to stop.
 
-```bash
-./target/release/lp-inspect --rpc-url "$SOLANA_RPC_URL" watch 4xj...
-```
-
-### `depth` — liquidity around the current price (Orca only)
+### `depth` — tick-array liquidity map (Orca)
 
 ```
 lp-inspect depth <POOL_ADDRESS>
 ```
 
-Reads pool-level liquidity and estimates the USD trade size required to move the price ±1%, ±2%, ±5%.
+Fetches 5 surrounding TickArray accounts, builds a bucketed liquidity distribution, renders an ASCII histogram, and estimates USD cost to move price ±1/2/5%.
 
-```bash
-./target/release/lp-inspect --rpc-url "$SOLANA_RPC_URL" depth Hp7...
-```
-
-### `impact` — price impact for a specific trade (Orca only)
+### `impact` — price impact for a trade (Orca)
 
 ```
 lp-inspect impact <POOL_ADDRESS> --size <USD>
 ```
 
-Estimates the post-trade price and percentage impact of buying `<USD>` worth of token A from the pool, assuming constant pool-level liquidity.
+Estimates post-trade price and % impact for a buy of `<USD>` worth of token A (constant-liquidity approximation).
 
-```bash
-./target/release/lp-inspect --rpc-url "$SOLANA_RPC_URL" impact Hp7... --size 50000
+### `strategy check` — rebalance signal
+
 ```
+lp-inspect strategy check <MINT> [--near-edge-ticks 10] [--min-pnl 0.0] [--entry-price <PRICE>]
+```
+
+Fetches position + pool, computes net P&L, evaluates `should_rebalance()` (out-of-range / near-edge / P&L threshold). Prints `HOLD` or `REBALANCE` with reason.
+
+### `rebalance` — dry-run execution plan
+
+```
+lp-inspect rebalance <MINT> --dry-run
+```
+
+Builds a close→collect→open instruction sequence and prints the plan. No transaction sent. Requires `LP_INSPECTOR_KEYPAIR` env var.
+
+### `hedge` — Drift perp hedge estimate
+
+```
+lp-inspect hedge <MINT> --dry-run
+```
+
+Fetches position Greeks, computes required Drift perp size to neutralize delta (long if delta<0, short if delta>0). Prints plan. No CPI sent. Requires `LP_INSPECTOR_KEYPAIR` env var.
+
+### `db migrate`
+
+```
+lp-inspect db migrate
+```
+
+Connects to Postgres (via `--db-url` or `DATABASE_URL`) and runs the schema migrations for `positions`, `pool_ticks`, and `pnl_history` tables.
 
 ## Example output
 
@@ -103,76 +127,68 @@ Estimates the post-trade price and percentage impact of buying `<USD>` worth of 
 ```
 Pool:        Hp7...   fee 5 bps
 Price:       $24.1873   range [$22.50, $26.00]   IN-RANGE (62%)
-Amounts:     1.234 A   |   29.87 B
+Amounts:     1.234 SOL   |   29.87 USDC
 Fees:        $4.21    IL: -$0.83    Net: $3.38
 Greeks:      delta=-0.0123  gamma=0.000041
 ```
 
-### `watch`
+### `strategy check`
 
 ```
-[14:02:11 UTC] Pool update received
-
-Pool:      Hp7...
-Price:     $24.1901
-Tick:      -32184
-In range:  YES
-Liquidity: 1284732001
+Position:     4xj...
+Tick current: -32184
+Range:        [-33000, -31000]
+Net P&L:      $3.38
+Decision:     HOLD (position healthy)
 ```
 
-### `depth`
+### `hedge`
 
 ```
-Liquidity Distribution  (pool liquidity: 1284M)
-──────────────────────────────────────────────────
-  +1%  (~$24.4292): $4123 needed to buy  |  $4087 needed to sell
-  +2%  (~$24.6710): $8210 needed to buy  |  $8113 needed to sell
-  +5%  (~$25.3967): $20114 needed to buy  | $19782 needed to sell
-
-Note: uses pool-level liquidity. Tick-array depth map coming in a future update.
-```
-
-### `impact`
-
-```
-Pool:          Hp7...
-Current price: $24.187300
-Trade size:    $50000
-Price impact:  +1.2143%
-Price after:   $24.481094
+Hedge Plan (DRY RUN — no instruction sent)
+Position:    4xj...
+Delta:       -0.0123
+Perp size:   $142.50
+Side:        long  (offsetting negative delta)
+Note:        Drift CPI not yet wired — size estimate only
 ```
 
 ## Development
 
 ```bash
-# Run all tests
-cargo test
-
-# Property-based math tests
-cargo test --test math_tests
-
-# Lint (warnings treated as errors)
-cargo clippy -- -D warnings
-
-# Format
-cargo fmt
+cargo test                        # all unit + integration tests
+cargo test --test math_golden     # golden vectors vs Orca SDK reference
+cargo test --test math_props      # proptest property-based suite (8 invariants)
+cargo clippy -- -D warnings       # lint
+cargo fmt                         # format
 ```
 
-## What's implemented
+## Test coverage
 
-- Orca Whirlpool position parsing + full P&L / IL / Greeks breakdown (`position --protocol orca`)
-- Raydium CLMM position parsing — minimal summary only (`position --protocol raydium`)
-- Live pool watch via WebSocket `accountSubscribe` (`watch`, Orca)
-- Depth estimate at ±1/2/5% using pool-level liquidity (`depth`, Orca)
-- Constant-liquidity price-impact estimate for a USD trade size (`impact`, Orca)
+- 25+ unit tests across math, analytics, strategy, execution layers
+- 8 proptest invariants (amounts ≥ 0, IL ≤ 0, delta sign, impact monotonicity, …)
+- 20 golden reference vectors validated against Orca Whirlpool formulas
 
-Known limitations: `depth` and `impact` use pool-level liquidity only — no tick-array walk, so results degrade for trades that cross tick boundaries. Token decimals are hardcoded (9/6) in the Orca position view.
+## TODO / Refactoring backlog
+
+### High priority
+- [ ] **Raydium analytics parity** — wire `analytics::*` + `display::table::print_position` into Raydium branch (currently prints raw fields only)
+- [ ] **WS backoff reset** — `src/data/ws.rs` backoff doesn't reset after successful reconnect; saturates at 30s on flapping connections
+- [ ] **`impact` tick-array walk** — current constant-liquidity approximation degrades for trades crossing tick boundaries; wire `build_distribution` into impact math
+
+### Medium priority
+- [ ] **Storage writes** — `PositionsRepo` is a stub; implement `insert_position`, `record_pnl` using `sqlx::query`
+- [ ] **Rebalance execution** — `src/execution/rebalance.rs` builds the plan but doesn't construct actual Solana instructions (`close_position` / `collect_fees` / `open_position` CPI calls)
+- [ ] **Drift CPI** — `src/execution/hedge.rs` estimates size but doesn't build the Drift instruction; wire `anchor-client` CPI
+- [ ] **Entry-price persistence** — currently `--entry-price` is ephemeral; persist to `$XDG_CACHE_HOME/lp-inspect/<mint>` so IL is accurate across `watch` sessions
+
+### Low priority
+- [ ] **`src/math/` amounts module** — `compute_token_amounts` still lives in `analytics/amounts.rs` (uses `orca_whirlpools_core`); move pure math to `src/math/amounts.rs` once deps are decoupled
+- [ ] **RPC timeout + retry** — `src/rpc.rs` has no timeout or retry; add configurable `--rpc-timeout` and exponential backoff
+- [ ] **Raydium field-order verification** — `src/protocols/raydium.rs` field order not validated against program source; add fixture-based parse test
+- [ ] **LICENSE file** — license TBD
 
 ## Roadmap
 
-- [`CLAUDE.md`](CLAUDE.md) — long-term vision: full LP manager with rebalancing engine, Drift perp hedging, and TimescaleDB-backed P&L history.
-- [`docs/superpowers/plans/2026-04-07-followup-tasks.md`](docs/superpowers/plans/2026-04-07-followup-tasks.md) — concrete near-term follow-ups (correctness, accuracy, dev-ex, docs).
-
-## License
-
-License TBD — no `LICENSE` file is currently present in the repo.
+- [`CLAUDE.md`](CLAUDE.md) — full vision: automated rebalancing, Drift perp hedging, TimescaleDB P&L history
+- [`docs/superpowers/plans/2026-04-07-followup-tasks.md`](docs/superpowers/plans/2026-04-07-followup-tasks.md) — completed F1–F14 task breakdown
