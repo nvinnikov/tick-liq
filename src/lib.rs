@@ -10,5 +10,6 @@ pub mod data;
 pub mod error;
 pub mod execution;
 pub mod math;
+pub mod observability;
 pub mod storage;
 pub mod strategy;
