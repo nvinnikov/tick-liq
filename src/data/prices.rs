@@ -13,10 +13,13 @@
 //! - [`CompositeFeed`] — prefers Pyth; if the last Pyth tick is older than
 //!   `staleness_threshold`, falls back to the CEX feed.
 //!
-//! Neither feed verifies account owner on the Pyth side — that check is the
-//! job of whoever constructed the `RpcPool` call path; here we assume the
-//! caller passed a trusted Pyth price pubkey. The module only cares about
-//! decoding the bytes at the known offsets.
+//! `PythFeed` verifies that the fetched account is owned by the configured
+//! Pyth program id on every fetch (via [`RpcPool::verify_owner`]) before
+//! decoding — this closes the spoofing hole left open by earlier versions
+//! where the decoder trusted whatever bytes came back. Callers that don't
+//! have a program id at construction time can use
+//! [`PythFeed::new_unchecked`] to opt out, but production call sites should
+//! always pass one.
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -25,7 +28,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::data::rpc::RpcPool;
+use crate::data::rpc::{AccountSnapshot, RpcPool};
 
 /// A single price observation from any source.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,11 +87,43 @@ pub trait PriceFeed: Send + Sync {
 pub struct PythFeed {
     rpc: RpcPool,
     price_pubkey: Pubkey,
+    /// Expected program owner of the price account. When `Some`, every
+    /// fetch verifies `account.owner == expected_owner` before decoding.
+    expected_owner: Option<Pubkey>,
 }
 
 impl PythFeed {
-    pub fn new(rpc: RpcPool, price_pubkey: Pubkey) -> Self {
-        Self { rpc, price_pubkey }
+    /// Build a feed that verifies the price account is owned by
+    /// `pyth_program_id` on every fetch. This is the recommended
+    /// constructor for all production call sites.
+    pub fn new(rpc: RpcPool, price_pubkey: Pubkey, pyth_program_id: Pubkey) -> Self {
+        Self {
+            rpc,
+            price_pubkey,
+            expected_owner: Some(pyth_program_id),
+        }
+    }
+
+    /// Build a feed that skips the program-owner check. Only for contexts
+    /// where the owner cannot be known at construction time (e.g. ad-hoc
+    /// tooling or tests). Production paths should prefer [`PythFeed::new`].
+    pub fn new_unchecked(rpc: RpcPool, price_pubkey: Pubkey) -> Self {
+        Self {
+            rpc,
+            price_pubkey,
+            expected_owner: None,
+        }
+    }
+
+    /// Verify + decode a pre-fetched snapshot. Extracted so tests can
+    /// exercise the owner-check path without standing up a live RPC.
+    fn decode_snapshot(&self, snap: &AccountSnapshot) -> Result<PriceTick> {
+        let bytes = match &self.expected_owner {
+            Some(owner) => RpcPool::verify_owner(snap, owner)
+                .with_context(|| format!("pyth price account {} owner check", self.price_pubkey))?,
+            None => snap.data.as_slice(),
+        };
+        decode_pyth_price(bytes)
     }
 }
 
@@ -154,7 +189,7 @@ impl PriceFeed for PythFeed {
             .fetch_account_data(&self.price_pubkey)
             .await
             .with_context(|| format!("fetch pyth account {}", self.price_pubkey))?;
-        decode_pyth_price(&snap.data)
+        self.decode_snapshot(&snap)
     }
 }
 
@@ -352,6 +387,49 @@ mod tests {
     fn pyth_decode_rejects_short_buffer() {
         let err = decode_pyth_price(&[0u8; 16]).unwrap_err();
         assert!(err.to_string().contains("too short"));
+    }
+
+    fn dummy_rpc() -> RpcPool {
+        RpcPool::new("http://127.0.0.1:1")
+    }
+
+    fn snap_with_owner(data: Vec<u8>, owner: Pubkey) -> AccountSnapshot {
+        AccountSnapshot {
+            data,
+            owner,
+            lamports: 0,
+        }
+    }
+
+    #[test]
+    fn pyth_decode_snapshot_verifies_owner_match() {
+        let bytes = fabricate_pyth_bytes(100, 0, -2, 42);
+        let owner = Pubkey::new_unique();
+        let feed = PythFeed::new(dummy_rpc(), Pubkey::new_unique(), owner);
+        let snap = snap_with_owner(bytes, owner);
+        let tick = feed.decode_snapshot(&snap).unwrap();
+        assert!((tick.price - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pyth_decode_snapshot_rejects_wrong_owner() {
+        let bytes = fabricate_pyth_bytes(100, 0, -2, 42);
+        let expected = Pubkey::new_unique();
+        let actual = Pubkey::new_unique();
+        let feed = PythFeed::new(dummy_rpc(), Pubkey::new_unique(), expected);
+        let snap = snap_with_owner(bytes, actual);
+        let err = feed.decode_snapshot(&snap).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(chain.contains("owner"), "got: {chain}");
+    }
+
+    #[test]
+    fn pyth_decode_snapshot_unchecked_skips_owner() {
+        let bytes = fabricate_pyth_bytes(100, 0, -2, 42);
+        // Owner is arbitrary garbage — unchecked feed does not care.
+        let feed = PythFeed::new_unchecked(dummy_rpc(), Pubkey::new_unique());
+        let snap = snap_with_owner(bytes, Pubkey::new_unique());
+        assert!(feed.decode_snapshot(&snap).is_ok());
     }
 
     #[test]
