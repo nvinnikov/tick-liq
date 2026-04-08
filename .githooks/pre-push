@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-push hook: fail fast when Cargo.lock is stale relative to Cargo.toml.
+#
+# Rationale: CI runs `cargo build --locked` and rejects stale lockfiles,
+# but by the time CI fails the PR is already open and everyone downstream
+# is blocked. Catching this on `git push` saves ~20 minutes of CI time and
+# a red PR per incident.
+#
+# To bypass (discouraged): git push --no-verify
+#
+# Install: ./scripts/install-hooks.sh  (sets core.hooksPath=.githooks)
+
+set -euo pipefail
+
+# Figure out which commits are being pushed. If we can't (no upstream,
+# first push of a branch, detached HEAD, etc.) fall back to HEAD only —
+# better to run the check than skip it silently.
+if upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
+  range="${upstream}..HEAD"
+else
+  range="HEAD~1..HEAD"
+fi
+
+# Short-circuit if the push touches no Rust-relevant files. Keeps
+# docs-only pushes fast and avoids spinning up cargo for nothing.
+if ! git diff --name-only "$range" 2>/dev/null | grep -qE '(^|/)(Cargo\.(toml|lock)|.*\.rs)$'; then
+  exit 0
+fi
+
+# Fast, compile-free check: `cargo metadata --locked` resolves the dep
+# graph against Cargo.lock and fails iff the lock is out of sync with
+# Cargo.toml. Much cheaper than `cargo check --locked`.
+if ! cargo metadata --locked --format-version 1 >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+
+pre-push: Cargo.lock is stale (out of sync with Cargo.toml).
+
+Someone changed Cargo.toml without committing the updated Cargo.lock.
+If you push this, CI will reject it with --locked and everyone
+downstream will be blocked.
+
+To fix:
+  cargo generate-lockfile    # or: cargo build
+  git add Cargo.lock
+  git commit --amend --no-edit    # or a fresh commit
+  git push
+
+To bypass this check (not recommended):
+  git push --no-verify
+
+EOF
+  exit 1
+fi
+
+exit 0

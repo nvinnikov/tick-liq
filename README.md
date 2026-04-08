@@ -176,6 +176,16 @@ If you are new to the repository, read the layers bottom-up — each layer is sm
 
 [`docs/architecture.md`](docs/architecture.md) covers each layer in more depth, including the key types, invariants, and how they compose.
 
+## Contributing: install git hooks
+
+The repo ships a pre-push hook that refuses to push if `Cargo.lock` is out of sync with `Cargo.toml` — this catches the "forgot to commit the updated lockfile" class of CI failure locally instead of 20 minutes later on GH Actions. Run once after cloning:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+This sets `core.hooksPath=.githooks` in your local repo config. The hook is a no-op for pushes that don't touch `Cargo.{toml,lock}` or any `*.rs` file. To bypass in an emergency: `git push --no-verify` (not recommended — CI will reject the same thing).
+
 ## Roadmap
 
 - [`CLAUDE.md`](CLAUDE.md) — long-term product vision.
