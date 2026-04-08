@@ -20,15 +20,18 @@
 //! We report capital efficiency as the V3 "concentration multiple":
 //!
 //! ```text
-//! CE = 1 / (1 − √(Pa / Pb))
+//! CE = 1 / (1 − (Pa / Pb)^(1/4))
 //! ```
 //!
 //! This is the ratio of virtual liquidity in the range `[Pa, Pb]` to the
-//! same capital spread across `[0, ∞)` (Uniswap V2). It depends only on
-//! the range endpoints, is monotone in tightness (narrower range ⇒ higher
-//! CE), and collapses to 1 for `Pa = 0`. It is *not* an expected fee
-//! yield — that requires a volume / fee-rate model and belongs in the
-//! backtest engine.
+//! same capital spread across `[0, ∞)` (Uniswap V2), evaluated at the
+//! geometric mid of the range. The fourth root comes from the fact that
+//! both reserves scale with `√P`, so the boundary factor is a fourth root
+//! of the price ratio, not a square root — see Uniswap V3 whitepaper §6.2.1.
+//! It depends only on the range endpoints, is monotone in tightness
+//! (narrower range ⇒ higher CE), and is *not* an expected fee yield —
+//! that requires a volume / fee-rate model and belongs in the backtest
+//! engine.
 
 use anyhow::{bail, Result};
 
@@ -191,10 +194,10 @@ fn finalize(ctx: &RangeContext, lower_price: f64, upper_price: f64) -> Result<Ra
         );
     }
 
-    // CE = 1 / (1 − √(Pa/Pb)). Token decimals cancel in the ratio, so we
-    // can use raw tick prices (`1.0001^tick`) directly.
+    // CE = 1 / (1 − (Pa/Pb)^(1/4)). Token decimals cancel in the ratio,
+    // so we can use raw tick prices (`1.0001^tick`) directly.
     let pa_over_pb = TICK_BASE.powi(lower_tick - upper_tick);
-    let ce = 1.0 / (1.0 - pa_over_pb.sqrt());
+    let ce = 1.0 / (1.0 - pa_over_pb.powf(0.25));
     // Clamp to u32::MAX ppm to handle absurdly tight ranges.
     let ce_ppm = (ce * 1e6).clamp(0.0, u32::MAX as f64) as u32;
 
@@ -281,8 +284,46 @@ mod tests {
         }
         .recommend(&ctx())
         .unwrap();
-        assert_eq!(r.lower_tick % 64, 0);
-        assert_eq!(r.upper_tick % 64, 0);
+        // rem_euclid (not `%`) is the correct alignment check for
+        // negative ticks — SOL/USDC ticks are large and negative.
+        assert_eq!(r.lower_tick.rem_euclid(64), 0);
+        assert_eq!(r.upper_tick.rem_euclid(64), 0);
+
+        // Also cover the opposite-sign case (flipped decimals) to make
+        // sure the ceiling alignment `raw_upper + s - 1` survives the
+        // sign boundary.
+        let flipped = RangeContext {
+            decimals_a: 6,
+            decimals_b: 9,
+            ..ctx()
+        };
+        let r2 = FixedWidth {
+            half_width_frac: 0.1,
+        }
+        .recommend(&flipped)
+        .unwrap();
+        assert_eq!(r2.lower_tick.rem_euclid(64), 0);
+        assert_eq!(r2.upper_tick.rem_euclid(64), 0);
+        assert!(r2.lower_tick < r2.upper_tick);
+    }
+
+    #[test]
+    fn capital_efficiency_golden() {
+        // For a ±10 % fixed-width range:
+        //   Pa/Pb = 0.9/1.1 ≈ 0.8182
+        //   (Pa/Pb)^(1/4) ≈ 0.9510
+        //   CE = 1 / (1 − 0.9510) ≈ 20.4
+        // Tick alignment can drift the true range by up to one spacing,
+        // so allow a ±1.5 band around the analytical value.
+        // (Square-root formula `1/(1−√(Pa/Pb))` would give ≈ 10.5 and
+        // fail this test, locking in the fourth-root V3 formula.)
+        let r = FixedWidth {
+            half_width_frac: 0.1,
+        }
+        .recommend(&ctx())
+        .unwrap();
+        let ce = r.capital_efficiency();
+        assert!((ce - 20.4).abs() < 1.5, "ce={} not in 20.4 ± 1.5", ce);
     }
 
     #[test]
