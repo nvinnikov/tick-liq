@@ -84,7 +84,7 @@ The layer that actually moves tokens. Under active integration — the rebalance
 | `tx.rs`           | `TxSubmitter` trait: signs, submits, and confirms transactions with retry/backoff.    |
 | `hedge.rs`        | Drift Protocol perp delta-hedge via Anchor CPI. **WIP** — currently a stub.           |
 
-The end-to-end pipeline (`monitor → signal → rebalance build`) is exercised by `tests/e2e_pipeline.rs`.
+The end-to-end pipeline (`monitor → signal → rebalance build`) is exercised by `tests/e2e_rebalance.rs`.
 
 ### `src/storage/` — persistence
 
@@ -123,7 +123,7 @@ The CLI subcommands listed in the README map onto these layers:
 - **Unit tests** live alongside each module.
 - **Property tests** (`tests/*_props.rs`) use `proptest` to enforce layer invariants across wide input spaces — especially in `math/` and `strategy/pnl`. Invariants are the contract; prefer fixing the code over weakening the invariant.
 - **Storage integration tests** (`tests/storage_db.rs`) are gated on `TICKLIQ_DATABASE_URL`.
-- **E2E pipeline test** (`tests/e2e_pipeline.rs`) drives the `monitor → signal → rebalance build` path end-to-end against in-memory fakes of the `data/` and `execution/` seams.
+- **E2E pipeline test** (`tests/e2e_rebalance.rs`) drives the `monitor → signal → rebalance build` path end-to-end against in-memory fakes of the `data/` and `execution/` seams.
 
 ## Error handling
 
