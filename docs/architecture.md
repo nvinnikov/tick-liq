@@ -74,6 +74,27 @@ Thin adapters over Solana RPC and price feeds. Each is constructed once and hand
 | `ws.rs`         | `accountSubscribe` WebSocket pool-state stream with automatic reconnect and backoff.      |
 | `prices.rs`     | Pyth on-chain price feed + CEX (Binance/OKX) fallback. Verifies the Pyth program owner at construction. |
 
+#### Pyth account layout: **V2 assumption**
+
+`decode_pyth_price` in `src/data/prices.rs` parses Pyth price accounts using **fixed V2 offsets**, not a versioned SDK. Concretely, it expects:
+
+| Offset | Type  | Field                                |
+| ------ | ----- | ------------------------------------ |
+| `0`    | `u32` | `magic` — must equal `0xa1b2c3d4`    |
+| `208`  | `i64` | `agg.price`                          |
+| `216`  | `u64` | `agg.conf`                           |
+| `280`  | `i64` | `timestamp`                          |
+
+This is deliberate — it avoids pulling the full `pyth-sdk-solana` crate and its Solana-SDK transitive dep tree for what is a read-only decode. The tradeoff is that **any future Pyth account-layout migration (e.g. V3) will silently break the decoder** until the offsets are refreshed. The magic check catches a version mismatch where the magic itself changes, but a same-magic layout shift would slip through as a numerical bug.
+
+If/when Pyth ships a new account format:
+
+1. Update the offset constants in `prices.rs` and bump the magic if it changes.
+2. Add a fixture for the new layout to the existing `pyth_decode_*` unit tests.
+3. Consider gating the old path behind a feature flag during the migration window if both layouts need to coexist.
+
+Until then: **assume V2**. The `pyth_decode_rejects_bad_magic` test guards the magic; the `decode_pyth_price` unit tests guard the offsets against known-good fixtures.
+
 ### `src/execution/` — transactions and hedging
 
 The layer that actually moves tokens. Under active integration — the rebalance state machine and tx submitter have landed; the Drift perp hedge is WIP.
