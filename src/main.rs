@@ -6,6 +6,7 @@ use std::str::FromStr;
 mod analytics;
 mod data;
 mod display;
+mod math;
 mod protocols;
 mod rpc;
 
