@@ -164,7 +164,15 @@ fn mul_shift_128(growth_delta: u128, liquidity: u128) -> u64 {
     // carry-aware add of the high halves of lo_lo with low halves of hi_lo+lo_hi,
     // promoted past bit 128.
     let mid = (lo_lo >> 64) + (hi_lo & (u64::MAX as u128)) + (lo_hi & (u64::MAX as u128));
-    // Bits [128..256] of the full product:
+    // Bits [128..256] of the full product. This u128 addition is provably
+    // non-overflowing: each operand fits in u128 by construction
+    // (`hi_hi <= (2^64 - 1)^2 < 2^128 - 2^65 + 1`, the two `>> 64` shifts
+    // each fit in u64, and `mid >> 64` fits in u66). The worst case is
+    // `growth_delta = liquidity = u128::MAX`, where the closed-form
+    // 256-bit product is `(2^128 - 1)^2 = 2^256 - 2^129 + 1`, whose top
+    // 128 bits equal `2^128 - 2`, comfortably inside u128. The
+    // `mul_shift_128_saturates_on_overflow` test plus the `cross_check`
+    // proptest below pin this corner empirically.
     let high = hi_hi + (hi_lo >> 64) + (lo_hi >> 64) + (mid >> 64);
     // We want bits [128..192], i.e. the low 64 bits of `high`. If anything
     // sits in bits [192..256] the result overflowed a u64 and we saturate.
@@ -283,6 +291,27 @@ mod tests {
         // Both operands max: result would be ~2^128 which exceeds u64.
         let out = mul_shift_128(u128::MAX, u128::MAX);
         assert_eq!(out, u64::MAX);
+    }
+
+    // Reference implementation: full 256-bit product via ethnum, shifted
+    // right by 128 and clamped to u64. Used by the proptest below to pin
+    // `mul_shift_128` to its mathematical definition across the input space.
+    fn reference_mul_shift_128(a: u128, b: u128) -> u64 {
+        use ethnum::U256;
+        let prod = U256::from(a) * U256::from(b);
+        let shifted = prod >> 128u32;
+        if shifted > U256::from(u64::MAX) {
+            u64::MAX
+        } else {
+            shifted.as_u64()
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn mul_shift_128_matches_reference(a: u128, b: u128) {
+            proptest::prop_assert_eq!(mul_shift_128(a, b), reference_mul_shift_128(a, b));
+        }
     }
 
     #[test]
