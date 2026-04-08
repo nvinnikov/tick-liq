@@ -38,5 +38,9 @@ chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Storage
+sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls"] }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono"] }
+
 [dev-dependencies]
 proptest = "1"

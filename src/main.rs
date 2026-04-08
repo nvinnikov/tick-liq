@@ -9,6 +9,7 @@ mod display;
 mod math;
 mod protocols;
 mod rpc;
+mod storage;
 mod strategy;
 
 #[derive(Parser)]
@@ -21,6 +22,10 @@ struct Cli {
         default_value = "https://api.devnet.solana.com"
     )]
     rpc_url: String,
+
+    /// Postgres connection URL (e.g. postgres://user:pass@localhost/tickliq)
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -62,6 +67,11 @@ enum Commands {
         #[command(subcommand)]
         command: StrategyCommands,
     },
+    /// Database operations
+    Db {
+        #[command(subcommand)]
+        action: DbAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,6 +90,12 @@ enum StrategyCommands {
         #[arg(long)]
         entry_price: Option<f64>,
     },
+}
+
+#[derive(Subcommand)]
+enum DbAction {
+    /// Run schema migrations
+    Migrate,
 }
 
 #[tokio::main]
@@ -509,6 +525,19 @@ async fn main() -> Result<()> {
                         println!("Decision:     REBALANCE ({})", reason);
                     }
                 }
+            }
+        },
+        Commands::Db { action } => match action {
+            DbAction::Migrate => {
+                let db_url = cli
+                    .db_url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--db-url or DATABASE_URL is required"))?;
+                let pool = storage::connect(db_url).await?;
+                storage::run_migrations(&pool).await?;
+                let repo = storage::positions::PositionsRepo::new(pool);
+                let _ = repo.pool();
+                println!("Migrations complete");
             }
         },
     }
