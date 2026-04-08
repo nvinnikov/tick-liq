@@ -51,6 +51,42 @@ enum Commands {
         #[arg(long)]
         size: f64,
     },
+    /// Pool-level commands
+    Pool {
+        #[command(subcommand)]
+        cmd: PoolCmd,
+    },
+    /// Monitor a position, polling P&L every N seconds
+    Monitor {
+        /// Position NFT mint address
+        #[arg(long)]
+        mint: String,
+        /// Poll interval in seconds
+        #[arg(long, default_value_t = 10)]
+        interval_secs: u64,
+    },
+    /// Backtest a strategy against historical pool data (stub)
+    Backtest {
+        /// Pool address
+        #[arg(long)]
+        pool: String,
+        /// Days of history to replay
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+        /// Strategy name (currently only `rebalance`)
+        #[arg(long, default_value = "rebalance")]
+        strategy: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PoolCmd {
+    /// Print pool info (price, liquidity, tick)
+    Info {
+        /// Pool address
+        #[arg(long)]
+        address: String,
+    },
 }
 
 #[tokio::main]
@@ -330,6 +366,80 @@ async fn main() -> Result<()> {
             } else {
                 println!("Price impact:  > liquidity available");
             }
+        }
+        Commands::Pool { cmd } => match cmd {
+            PoolCmd::Info { address } => {
+                let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+                let pool_data = rpc.fetch_account_data(address)?;
+                let pool = protocols::orca::parse_pool(&pool_data)?;
+                let price = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
+                println!("Pool:       {}", address);
+                println!("Price:      ${:.6}", price);
+                println!("Tick:       {}", pool.tick_current_index);
+                println!("Liquidity:  {}", pool.liquidity);
+                println!("Fee (bps):  {:.2}", pool.fee_rate as f64 / 100.0);
+            }
+        },
+        Commands::Monitor {
+            mint,
+            interval_secs,
+        } => {
+            use orca_whirlpools_core::tick_index_to_sqrt_price;
+            use std::time::Duration;
+
+            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let whirlpool_program = Pubkey::from_str(protocols::orca::WHIRLPOOL_PROGRAM_ID)?;
+            let mint_pubkey = Pubkey::from_str(mint)?;
+            let (position_pda, _) = Pubkey::find_program_address(
+                &[b"position", mint_pubkey.as_ref()],
+                &whirlpool_program,
+            );
+
+            let position_data = rpc.fetch_account_data(&position_pda.to_string())?;
+            let pos = protocols::orca::parse_position(&position_data)?;
+            let pool_addr = pos.whirlpool.to_string();
+
+            let price_lower = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
+                pos.tick_lower_index,
+            ));
+            let price_upper = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
+                pos.tick_upper_index,
+            ));
+
+            println!(
+                "Monitoring {}  (every {}s, Ctrl+C to stop)",
+                mint, interval_secs
+            );
+            loop {
+                let pool_data = rpc.fetch_account_data(&pool_addr)?;
+                let pool = protocols::orca::parse_pool(&pool_data)?;
+                let price = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
+                let in_range = pool.tick_current_index >= pos.tick_lower_index
+                    && pool.tick_current_index <= pos.tick_upper_index;
+                let il_fraction = analytics::pnl::compute_il(0.0, price, price_lower, price_upper);
+                println!(
+                    "[{}] price=${:.4}  in_range={}  il_fraction={:+.4}%",
+                    chrono::Utc::now().format("%H:%M:%S"),
+                    price,
+                    in_range,
+                    il_fraction * 100.0
+                );
+                tokio::time::sleep(Duration::from_secs(*interval_secs)).await;
+            }
+        }
+        Commands::Backtest {
+            pool,
+            days,
+            strategy,
+        } => {
+            // TODO: wire to strategy::backtest::run_backtest once historical tick
+            // ingestion lands (task #21 / follow-up). For now emit a structured
+            // stub so callers and CI can exercise the CLI surface.
+            println!("backtest: TODO");
+            println!("  pool:     {}", pool);
+            println!("  days:     {}", days);
+            println!("  strategy: {}", strategy);
+            println!("  status:   stub — historical tick ingestion not yet wired (see task #21)");
         }
     }
 
