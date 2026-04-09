@@ -7,7 +7,7 @@ Seven phases carry tick-liq from a CLI prototype with a scaffolded schema to a f
 ## Phases
 
 - [x] **Phase 1: Persistence** - Wire pool_ticks + pnl_history writes in watch mode (completed 2026-04-09)
-- [x] **Phase 2: Shadow Mode** - Full rebalance logic running without signing or submitting transactions (completed 2026-04-09)
+- [ ] **Phase 2: Shadow Mode** - Full rebalance logic running without signing or submitting transactions
 - [ ] **Phase 3: Real-Data Backtest** - backtest command reads accumulated TimescaleDB ticks instead of GBM sim
 - [ ] **Phase 4: Slippage Guard** - Price impact check blocks any rebalance that exceeds configured bps threshold
 - [ ] **Phase 5: Live Execution** - Anchor CPI to Orca + Drift perp hedge update behind --live flag
@@ -44,10 +44,10 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [x] 02-01: Add `--shadow` / `--live` flags to CLI; implement `ShadowGuard` that blocks signing when shadow is active
-- [x] 02-02: Log shadow rebalance decisions (structured tracing + DB write to `shadow_rebalances` table)
-- [x] 02-03: Implement shadow gate check: query DB for earliest shadow_rebalance row, count errors in window; error if criteria not met
-- [x] 02-04: Integration test: verify --live rejected before 2-week threshold and accepted (mocked) after
+- [ ] 02-01: Add `--shadow` / `--live` flags to CLI; implement `ShadowGuard` that blocks signing when shadow is active
+- [ ] 02-02: Log shadow rebalance decisions (structured tracing + DB write to `shadow_rebalances` table)
+- [ ] 02-03: Implement shadow gate check: query DB for earliest shadow_rebalance row, count errors in window; error if criteria not met
+- [ ] 02-04: Integration test: verify --live rejected before 2-week threshold and accepted (mocked) after
 
 ### Phase 3: Real-Data Backtest
 **Goal**: `backtest` reads actual collected tick history from TimescaleDB, replacing the GBM simulator with replay of real market microstructure.
@@ -138,20 +138,9 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Persistence | 3/3 | Complete   | 2026-04-09 |
-| 2. Shadow Mode | 4/4 | Complete | 2026-04-09 |
+| 2. Shadow Mode | 0/4 | Not started | - |
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
 | 5. Live Execution | 0/4 | Not started | - |
 | 6. Risk Limits | 0/4 | Not started | - |
 | 7. Telegram Bot | 0/4 | Not started | - |
-
-## Backlog
-
-### Phase 999.1: Conduct trader custdev interviews (BACKLOG)
-
-**Goal:** Find 5-10 algo traders, validate FlowSense signal API and tick-liq LP automation pain points
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)

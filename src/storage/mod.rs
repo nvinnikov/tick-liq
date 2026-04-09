@@ -1,4 +1,5 @@
 pub mod positions;
+pub mod tick_reader;
 pub mod writer;
 
 use anyhow::{Context, Result};
