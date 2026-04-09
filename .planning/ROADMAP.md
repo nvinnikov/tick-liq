@@ -7,7 +7,7 @@ Seven phases carry tick-liq from a CLI prototype with a scaffolded schema to a f
 ## Phases
 
 - [x] **Phase 1: Persistence** - Wire pool_ticks + pnl_history writes in watch mode (completed 2026-04-09)
-- [ ] **Phase 2: Shadow Mode** - Full rebalance logic running without signing or submitting transactions
+- [x] **Phase 2: Shadow Mode** - Full rebalance logic running without signing or submitting transactions (completed 2026-04-09)
 - [ ] **Phase 3: Real-Data Backtest** - backtest command reads accumulated TimescaleDB ticks instead of GBM sim
 - [ ] **Phase 4: Slippage Guard** - Price impact check blocks any rebalance that exceeds configured bps threshold
 - [ ] **Phase 5: Live Execution** - Anchor CPI to Orca + Drift perp hedge update behind --live flag
@@ -138,7 +138,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Persistence | 3/3 | Complete   | 2026-04-09 |
-| 2. Shadow Mode | 0/4 | Not started | - |
+| 2. Shadow Mode | 4/4 | Complete | 2026-04-09 |
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
 | 5. Live Execution | 0/4 | Not started | - |
