@@ -39,3 +39,25 @@ CREATE TABLE IF NOT EXISTS pnl_history (
     price DOUBLE PRECISION NOT NULL
 );
 -- SELECT create_hypertable('pnl_history', 'time', if_not_exists => TRUE);
+
+-- Shadow rebalance decisions (SHADOW-02): one row per rebalance trigger in shadow mode.
+-- Server-side DEFAULT NOW() timestamp; BIGSERIAL id — no client-supplied id (T-02-04).
+CREATE TABLE IF NOT EXISTS shadow_rebalances (
+    id                      BIGSERIAL PRIMARY KEY,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pool_address            TEXT NOT NULL,
+    trigger_reason          TEXT NOT NULL,
+    price                   DOUBLE PRECISION NOT NULL,
+    simulated_range_width   DOUBLE PRECISION,
+    simulated_fees_earned   DOUBLE PRECISION,
+    simulated_il_usd        DOUBLE PRECISION,
+    simulated_net_pnl       DOUBLE PRECISION,
+    error_flag              BOOLEAN NOT NULL DEFAULT FALSE,
+    error_message           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_rebalances_pool_created
+    ON shadow_rebalances (pool_address, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_rebalances_pool_error
+    ON shadow_rebalances (pool_address) WHERE error_flag = true;
