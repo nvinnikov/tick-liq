@@ -415,6 +415,10 @@ async fn main() -> Result<()> {
         Commands::Watch { mint, shadow: _, live } => {
             let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
             tracing::info!(mode = ?run_mode, "watch starting");
+            let guard = match run_mode {
+                RunMode::Shadow => execution::ShadowGuard::shadow(),
+                RunMode::Live => execution::ShadowGuard::live(),
+            };
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -507,6 +511,19 @@ async fn main() -> Result<()> {
                     }
                 );
                 println!("Liquidity: {}", pool.liquidity);
+
+                // Gate: if a rebalance plan were to be submitted, check shadow guard first.
+                // In Phase 2 there is no real plan — we use the pool state as the proxy.
+                // Real rebalance plan construction arrives in Phase 5.
+                if !in_range {
+                    let plan_proxy = format!(
+                        "rebalance_needed tick={} range=[{},{}]",
+                        pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
+                    );
+                    if let Err(e) = guard.submit(&plan_proxy) {
+                        tracing::warn!(error = %e, "rebalance submission gated");
+                    }
+                }
 
                 // Persist tick snapshot if DB is configured.
                 if let Some(ref pg) = db_pool {
