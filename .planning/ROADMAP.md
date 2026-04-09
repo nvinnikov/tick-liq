@@ -44,9 +44,9 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: Add `--shadow` / `--live` flags to CLI; implement `ShadowGuard` that blocks signing when shadow is active
-- [ ] 02-02: Log shadow rebalance decisions (structured tracing + DB write to `shadow_rebalances` table)
-- [ ] 02-03: Implement shadow gate check: query DB for earliest shadow_rebalance row, count errors in window; error if criteria not met
+- [x] 02-01: Add `--shadow` / `--live` flags to CLI; implement `ShadowGuard` that blocks signing when shadow is active
+- [x] 02-02: Log shadow rebalance decisions (structured tracing + DB write to `shadow_rebalances` table)
+- [x] 02-03: Implement shadow gate check: query DB for earliest shadow_rebalance row, count errors in window; error if criteria not met
 - [ ] 02-04: Integration test: verify --live rejected before 2-week threshold and accepted (mocked) after
 
 ### Phase 3: Real-Data Backtest
