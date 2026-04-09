@@ -3,6 +3,12 @@ use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Shadow,
+    Live,
+}
+
 mod analytics;
 mod backtest;
 mod cache;
@@ -57,6 +63,12 @@ enum Commands {
     Watch {
         /// Position NFT mint address
         mint: String,
+        /// Run in shadow mode: decisions logged, no transactions submitted (DEFAULT)
+        #[arg(long, conflicts_with = "live")]
+        shadow: bool,
+        /// Run in live mode: submit real transactions (requires shadow gate passed)
+        #[arg(long, conflicts_with = "shadow")]
+        live: bool,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -400,7 +412,9 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
-        Commands::Watch { mint } => {
+        Commands::Watch { mint, shadow: _, live } => {
+            let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
+            tracing::info!(mode = ?run_mode, "watch starting");
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
