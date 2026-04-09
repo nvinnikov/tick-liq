@@ -6,7 +6,7 @@ Seven phases carry tick-liq from a CLI prototype with a scaffolded schema to a f
 
 ## Phases
 
-- [ ] **Phase 1: Persistence** - Wire pool_ticks + pnl_history writes in watch mode
+- [x] **Phase 1: Persistence** - Wire pool_ticks + pnl_history writes in watch mode (completed 2026-04-09)
 - [ ] **Phase 2: Shadow Mode** - Full rebalance logic running without signing or submitting transactions
 - [ ] **Phase 3: Real-Data Backtest** - backtest command reads accumulated TimescaleDB ticks instead of GBM sim
 - [ ] **Phase 4: Slippage Guard** - Price impact check blocks any rebalance that exceeds configured bps threshold
@@ -28,9 +28,9 @@ Seven phases carry tick-liq from a CLI prototype with a scaffolded schema to a f
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Implement async `storage::writer` module — `pool_ticks` upsert via sqlx with slot-keyed conflict resolution
-- [ ] 01-02: Implement `pnl_history` writer — fees_earned, il_usd, net_pnl, position_value per tick event; fire-and-forget via tokio::spawn
-- [ ] 01-03: Wire both writers into `watch` command event loop; integration test with embedded Postgres or test DB
+- [x] 01-01: Implement async `storage::writer` module — `pool_ticks` upsert via sqlx with slot-keyed conflict resolution
+- [x] 01-02: Implement `pnl_history` writer — fees_earned, il_usd, net_pnl, position_value per tick event; fire-and-forget via tokio::spawn
+- [x] 01-03: Wire both writers into `watch` command event loop; integration test with embedded Postgres or test DB
 
 ### Phase 2: Shadow Mode
 **Goal**: Operator can run the full rebalance decision loop for weeks without any transaction risk, building confidence and a logged decision trail before touching real capital.
@@ -137,7 +137,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Persistence | 0/3 | Not started | - |
+| 1. Persistence | 3/3 | Complete   | 2026-04-09 |
 | 2. Shadow Mode | 0/4 | Not started | - |
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
