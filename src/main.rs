@@ -454,6 +454,27 @@ async fn main() -> Result<()> {
                 }
             };
 
+            // ── Shadow gate: blocks --live until DB conditions are met (SHADOW-04) ──
+            // Gate runs only in Live mode; shadow mode is never gated.
+            if matches!(run_mode, RunMode::Live) {
+                match &db_pool {
+                    None => {
+                        eprintln!("ERROR: shadow gate FAILED: DATABASE_URL required for --live mode");
+                        eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
+                        std::process::exit(2);
+                    }
+                    Some(pg) => {
+                        let status = storage::writer::check_shadow_gate(pg, &pool_addr).await?;
+                        if !status.is_pass() {
+                            eprintln!("ERROR: {}", status.describe());
+                            eprintln!("Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live.");
+                            std::process::exit(2);
+                        }
+                        tracing::info!("shadow gate passed; entering LIVE mode");
+                    }
+                }
+            }
+
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
 

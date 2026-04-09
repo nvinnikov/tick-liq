@@ -180,6 +180,155 @@ pub fn spawn_shadow_write(pool: PgPool, row: ShadowRebalanceRow) {
     });
 }
 
+/// Number of days of shadow data required before --live is allowed.
+pub const SHADOW_GATE_REQUIRED_DAYS: i64 = 14;
+
+/// Result of the DB gate check that guards `--live` mode startup.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GateStatus {
+    /// All conditions met — safe to enter live mode.
+    Pass,
+    /// No shadow_rebalances rows exist for this pool.
+    NoData { pool_address: String },
+    /// Earliest row is too recent; need at least `required_age_days` days.
+    TooRecent { earliest: DateTime<Utc>, required_age_days: i64 },
+    /// One or more rows have `error_flag = true`.
+    ErrorsPresent { count: i64 },
+}
+
+impl GateStatus {
+    pub fn is_pass(&self) -> bool {
+        matches!(self, GateStatus::Pass)
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            GateStatus::Pass => "shadow gate PASSED".to_string(),
+            GateStatus::NoData { pool_address } => format!(
+                "shadow gate FAILED: no shadow_rebalances rows for pool {}",
+                pool_address
+            ),
+            GateStatus::TooRecent { earliest, required_age_days } => format!(
+                "shadow gate FAILED: earliest shadow row is {}, requires {} days of runtime before --live",
+                earliest.to_rfc3339(),
+                required_age_days
+            ),
+            GateStatus::ErrorsPresent { count } => format!(
+                "shadow gate FAILED: {} error-flagged shadow_rebalances rows must be zero",
+                count
+            ),
+        }
+    }
+}
+
+/// Check the DB gate conditions for allowing `--live` mode.
+///
+/// Checks in order:
+/// 1. NoData — if no rows exist for the pool
+/// 2. TooRecent — if the earliest row is less than SHADOW_GATE_REQUIRED_DAYS old
+/// 3. ErrorsPresent — if any row has error_flag = true
+/// 4. Pass — all conditions satisfied
+///
+/// Uses parameterised queries (T-02-08: no override path).
+pub async fn check_shadow_gate(
+    pool: &PgPool,
+    pool_address: &str,
+) -> anyhow::Result<GateStatus> {
+    use sqlx_core::query_scalar::query_scalar;
+
+    // Step 1: check for any rows at all
+    let earliest: Option<DateTime<Utc>> = query_scalar(
+        "SELECT MIN(created_at) FROM shadow_rebalances WHERE pool_address = $1",
+    )
+    .bind(pool_address)
+    .fetch_one(pool)
+    .await
+    .context("check_shadow_gate: MIN(created_at) query failed")?;
+
+    let earliest = match earliest {
+        None => {
+            return Ok(GateStatus::NoData {
+                pool_address: pool_address.to_string(),
+            })
+        }
+        Some(ts) => ts,
+    };
+
+    // Step 2: check age requirement
+    let required = chrono::Duration::days(SHADOW_GATE_REQUIRED_DAYS);
+    if Utc::now() - earliest < required {
+        return Ok(GateStatus::TooRecent {
+            earliest,
+            required_age_days: SHADOW_GATE_REQUIRED_DAYS,
+        });
+    }
+
+    // Step 3: check for error rows
+    let error_count: i64 = query_scalar(
+        "SELECT COUNT(*) FROM shadow_rebalances WHERE pool_address = $1 AND error_flag = true",
+    )
+    .bind(pool_address)
+    .fetch_one(pool)
+    .await
+    .context("check_shadow_gate: error_flag count query failed")?;
+
+    if error_count > 0 {
+        return Ok(GateStatus::ErrorsPresent { count: error_count });
+    }
+
+    Ok(GateStatus::Pass)
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn describe_failures_are_actionable() {
+        let s = GateStatus::NoData {
+            pool_address: "abc".into(),
+        };
+        assert!(
+            s.describe().contains("no shadow_rebalances rows"),
+            "NoData describe should mention 'no shadow_rebalances rows'"
+        );
+
+        let s = GateStatus::ErrorsPresent { count: 3 };
+        assert!(
+            s.describe().contains("3 error-flagged"),
+            "ErrorsPresent describe should mention count"
+        );
+    }
+
+    #[test]
+    fn gate_status_is_pass_predicate() {
+        assert!(GateStatus::Pass.is_pass());
+        assert!(!GateStatus::NoData { pool_address: "x".into() }.is_pass());
+        assert!(
+            !GateStatus::TooRecent {
+                earliest: Utc::now(),
+                required_age_days: 14,
+            }
+            .is_pass()
+        );
+        assert!(!GateStatus::ErrorsPresent { count: 1 }.is_pass());
+    }
+
+    #[test]
+    fn too_recent_describe_contains_rfc3339_and_days() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let s = GateStatus::TooRecent {
+            earliest: ts,
+            required_age_days: 14,
+        };
+        let desc = s.describe();
+        assert!(desc.contains("14"), "should mention required days");
+        assert!(desc.contains("2026-03-01"), "should contain date");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
