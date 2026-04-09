@@ -3,6 +3,10 @@ name = "tick-liq"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "tick_liq"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lp-inspect"
 path = "src/main.rs"
