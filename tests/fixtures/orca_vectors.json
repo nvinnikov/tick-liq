@@ -97,8 +97,8 @@
       "price_current": 80.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.00155402,
-      "tolerance_abs": 1e-5
+      "expected_il": -0.006192010,
+      "tolerance_abs": 1e-7
     },
     {
       "description": "I4: price rises to upper bound, entry at midpoint",
@@ -106,8 +106,8 @@
       "price_current": 120.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.00104520,
-      "tolerance_abs": 1e-5
+      "expected_il": -0.004140805,
+      "tolerance_abs": 1e-7
     },
     {
       "description": "I5: price far below range -> clamped to lower, same IL as I3",
@@ -115,8 +115,8 @@
       "price_current": 10.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.00155402,
-      "tolerance_abs": 1e-5
+      "expected_il": -0.006192010,
+      "tolerance_abs": 1e-7
     },
     {
       "description": "I6: price far above range -> clamped to upper, same IL as I4",
@@ -124,8 +124,8 @@
       "price_current": 1000.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.00104520,
-      "tolerance_abs": 1e-5
+      "expected_il": -0.004140805,
+      "tolerance_abs": 1e-7
     }
   ],
   "greeks_vectors": [
