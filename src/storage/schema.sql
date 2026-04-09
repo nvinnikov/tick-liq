@@ -11,12 +11,17 @@ CREATE TABLE IF NOT EXISTS positions (
     closed_at TIMESTAMPTZ
 );
 
--- TimescaleDB hypertable for per-tick liquidity snapshots
+-- TimescaleDB hypertable for per-tick pool state snapshots
 CREATE TABLE IF NOT EXISTS pool_ticks (
     time TIMESTAMPTZ NOT NULL,
     pool_address TEXT NOT NULL,
-    tick_index INT NOT NULL,
-    liquidity_net BIGINT NOT NULL
+    slot BIGINT NOT NULL,
+    tick_current INT NOT NULL,
+    sqrt_price NUMERIC(80,0) NOT NULL,
+    liquidity NUMERIC(80,0) NOT NULL,
+    fee_growth_global_a NUMERIC(80,0) NOT NULL,
+    fee_growth_global_b NUMERIC(80,0) NOT NULL,
+    UNIQUE (pool_address, slot)
 );
 -- SELECT create_hypertable('pool_ticks', 'time', if_not_exists => TRUE);
 
