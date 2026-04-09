@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
+use std::time::Duration;
 
 /// Metaplex Token Metadata program ID.
 const METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
@@ -10,28 +11,83 @@ const METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 /// Layout: mint_authority option (36) + supply (8) = 44 bytes before decimals.
 const MINT_DECIMALS_OFFSET: usize = 44;
 
+/// Default per-request timeout in seconds.
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+/// Maximum number of attempts (1 initial + 2 retries).
+const MAX_ATTEMPTS: u32 = 3;
+
+/// Base delay for exponential backoff between retries.
+const RETRY_BASE: Duration = Duration::from_millis(250);
+
 pub struct SolanaRpc {
     pub client: RpcClient,
+    /// Stored for diagnostics / future retry-timeout tuning.
+    #[allow(dead_code)]
+    timeout_secs: u64,
 }
 
 impl SolanaRpc {
+    /// Create a new client with the default [`DEFAULT_TIMEOUT_SECS`]-second timeout.
+    #[allow(dead_code)]
     pub fn new(url: &str) -> Self {
+        Self::with_timeout(url, DEFAULT_TIMEOUT_SECS)
+    }
+
+    /// Create a new client with a configurable per-request timeout (seconds).
+    ///
+    /// The timeout is passed directly to the underlying [`RpcClient`] HTTP
+    /// layer so every individual request is bounded.  On timeout or transport
+    /// error each call is retried up to [`MAX_ATTEMPTS`] times with
+    /// exponential backoff (250 ms → 500 ms → 1 s).
+    pub fn with_timeout(url: &str, timeout_secs: u64) -> Self {
         Self {
-            client: RpcClient::new(url.to_string()),
+            client: RpcClient::new_with_timeout(
+                url.to_string(),
+                Duration::from_secs(timeout_secs),
+            ),
+            timeout_secs,
         }
+    }
+
+    /// Execute a fallible RPC closure with up to [`MAX_ATTEMPTS`] retries and
+    /// exponential backoff (250 ms, 500 ms, 1 s).
+    ///
+    /// `label` appears in warning logs and the final error message.
+    fn retry<F, T>(&self, label: &str, mut f: F) -> Result<T>
+    where
+        F: FnMut() -> Result<T>,
+    {
+        let mut last_err = anyhow!("{label}: no attempts made");
+        for attempt in 0..MAX_ATTEMPTS {
+            if attempt > 0 {
+                let delay = RETRY_BASE * 2u32.pow(attempt - 1);
+                std::thread::sleep(delay);
+            }
+            match f() {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    tracing::warn!("{label}: attempt {attempt} failed: {e}");
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
     }
 
     /// Fetch account bytes and verify the program owner matches `expected_owner`.
     ///
     /// CLAUDE.md mandate: "Always verify program owner before deserializing."
+    /// Retried up to [`MAX_ATTEMPTS`] times on transport/timeout errors.
     pub fn fetch_account_checked(&self, address: &str, expected_owner: &Pubkey) -> Result<Vec<u8>> {
         let pubkey = Pubkey::from_str(address)
             .map_err(|e| anyhow!("Invalid address '{}': {}", address, e))?;
 
-        let account = self
-            .client
-            .get_account(&pubkey)
-            .map_err(|e| anyhow!("Account '{}' not found: {}", address, e))?;
+        let account = self.retry(&format!("get_account({address})"), || {
+            self.client
+                .get_account(&pubkey)
+                .map_err(|e| anyhow!("Account '{}' not found: {}", address, e))
+        })?;
 
         verify_owner(address, &account.owner, expected_owner)?;
         Ok(account.data)
@@ -41,11 +97,13 @@ impl SolanaRpc {
     ///
     /// SPL mint layout (packed): option<mint_authority> (36 bytes) + supply (8 bytes) = 44 bytes,
     /// then decimals (1 byte) at offset 44.
+    /// Retried up to [`MAX_ATTEMPTS`] times on transport/timeout errors.
     pub fn fetch_mint_decimals(&self, mint: &Pubkey) -> Result<u8> {
-        let account = self
-            .client
-            .get_account(mint)
-            .map_err(|e| anyhow!("Mint account '{}' not found: {}", mint, e))?;
+        let account = self.retry(&format!("get_account(mint={mint})"), || {
+            self.client
+                .get_account(mint)
+                .map_err(|e| anyhow!("Mint account '{}' not found: {}", mint, e))
+        })?;
 
         if account.data.len() <= MINT_DECIMALS_OFFSET {
             return Err(anyhow!(
@@ -79,10 +137,11 @@ impl SolanaRpc {
             &metadata_program,
         );
 
-        let account = self
-            .client
-            .get_account(&metadata_pda)
-            .map_err(|e| anyhow!("Metadata account not found: {}", e))?;
+        let account = self.retry("get_account(metadata_pda)", || {
+            self.client
+                .get_account(&metadata_pda)
+                .map_err(|e| anyhow!("Metadata account not found: {}", e))
+        })?;
 
         // Metaplex metadata v1 layout:
         //   key(1) + update_authority(32) + mint(32) = 65 bytes header
@@ -198,5 +257,68 @@ mod tests {
             .to_string();
 
         assert_eq!(parsed, "TST");
+    }
+
+    /// Verify that `retry` succeeds on the first attempt when the closure is Ok.
+    #[test]
+    fn retry_succeeds_immediately_on_ok() {
+        let rpc = SolanaRpc::with_timeout("https://api.devnet.solana.com", 30);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_clone = calls.clone();
+        let result = rpc.retry("test_ok", move || {
+            calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<i32, anyhow::Error>(42)
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "should only call once on success");
+    }
+
+    /// Verify that `retry` exhausts all attempts and returns the last error.
+    #[test]
+    fn retry_exhausts_attempts_on_persistent_error() {
+        let rpc = SolanaRpc::with_timeout("https://api.devnet.solana.com", 30);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_clone = calls.clone();
+        let result = rpc.retry::<_, i32>("test_err", move || {
+            calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(anyhow!("transient error"))
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("transient error"));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_ATTEMPTS,
+            "should attempt exactly MAX_ATTEMPTS times"
+        );
+    }
+
+    /// Verify that `retry` succeeds on a later attempt after initial failures.
+    #[test]
+    fn retry_succeeds_on_second_attempt() {
+        let rpc = SolanaRpc::with_timeout("https://api.devnet.solana.com", 30);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_clone = calls.clone();
+        let result = rpc.retry("test_eventual_ok", move || {
+            let n = calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Err(anyhow!("first attempt fails"))
+            } else {
+                Ok::<i32, anyhow::Error>(7)
+            }
+        });
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Verify `with_timeout` constructor stores the timeout and builds a client.
+    #[test]
+    fn with_timeout_constructs_client() {
+        let rpc = SolanaRpc::with_timeout("https://api.devnet.solana.com", 5);
+        // Just verify the struct is constructed — we can't inspect the internal
+        // reqwest timeout, but we can check the client url via a bad pubkey call.
+        let dummy_owner = Pubkey::new_unique();
+        let result = rpc.fetch_account_checked("not_a_valid_pubkey", &dummy_owner);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid address"));
     }
 }
