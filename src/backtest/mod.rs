@@ -4,6 +4,8 @@
 //! state, then applies CLMM math at each step (IL, fee accrual).
 //! Optionally fires rebalance events via the strategy signal module.
 
+pub mod db_replay;
+
 use crate::math::il::compute_il;
 use crate::strategy::{self, RebalanceConfig, RebalanceDecision};
 
@@ -107,7 +109,7 @@ impl Prng {
 
 // ── Price-to-tick helper ──────────────────────────────────────────────────────
 
-fn price_to_tick(price: f64, tick_spacing: i32) -> i32 {
+pub(crate) fn price_to_tick(price: f64, tick_spacing: i32) -> i32 {
     // tick = log_{1.0001}(price) = ln(price) / ln(1.0001)
     let raw = (price.ln() / 1.0001_f64.ln()).floor() as i32;
     // Round down to nearest multiple of tick_spacing (floor division for negative ticks).
