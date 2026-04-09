@@ -3,6 +3,12 @@ use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Shadow,
+    Live,
+}
+
 mod analytics;
 mod backtest;
 mod cache;
@@ -57,6 +63,12 @@ enum Commands {
     Watch {
         /// Position NFT mint address
         mint: String,
+        /// Run in shadow mode: decisions logged, no transactions submitted (DEFAULT)
+        #[arg(long, conflicts_with = "live")]
+        shadow: bool,
+        /// Run in live mode: submit real transactions (requires shadow gate passed)
+        #[arg(long, conflicts_with = "shadow")]
+        live: bool,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -400,7 +412,13 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
-        Commands::Watch { mint } => {
+        Commands::Watch { mint, shadow: _, live } => {
+            let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
+            tracing::info!(mode = ?run_mode, "watch starting");
+            let guard = match run_mode {
+                RunMode::Shadow => execution::ShadowGuard::shadow(),
+                RunMode::Live => execution::ShadowGuard::live(),
+            };
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -419,6 +437,44 @@ async fn main() -> Result<()> {
                 .replace("https://", "wss://")
                 .replace("http://", "ws://");
 
+            // Connect to Postgres if DATABASE_URL is configured; otherwise run
+            // without persistence (preserves dev UX when no DB is available).
+            let db_pool: Option<sqlx_postgres::PgPool> = match cli.db_url.as_deref() {
+                Some(url) => {
+                    let pg = storage::connect(url).await?;
+                    storage::run_migrations(&pg).await?;
+                    tracing::info!("Storage connected — persisting tick snapshots to Postgres");
+                    Some(pg)
+                }
+                None => {
+                    tracing::warn!(
+                        "DATABASE_URL not set — running watch without persistence"
+                    );
+                    None
+                }
+            };
+
+            // ── Shadow gate: blocks --live until DB conditions are met (SHADOW-04) ──
+            // Gate runs only in Live mode; shadow mode is never gated.
+            if matches!(run_mode, RunMode::Live) {
+                match &db_pool {
+                    None => {
+                        eprintln!("ERROR: shadow gate FAILED: DATABASE_URL required for --live mode");
+                        eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
+                        std::process::exit(2);
+                    }
+                    Some(pg) => {
+                        let status = storage::writer::check_shadow_gate(pg, &pool_addr).await?;
+                        if !status.is_pass() {
+                            eprintln!("ERROR: {}", status.describe());
+                            eprintln!("Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live.");
+                            std::process::exit(2);
+                        }
+                        tracing::info!("shadow gate passed; entering LIVE mode");
+                    }
+                }
+            }
+
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
 
@@ -434,7 +490,8 @@ async fn main() -> Result<()> {
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
-            let on_notify = Box::new(move |_json: serde_json::Value| {
+            let mint_str = mint.clone();
+            let on_notify = Box::new(move |json: serde_json::Value| {
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
                 print!("\x1B[2J\x1B[1;1H");
                 println!(
@@ -475,6 +532,202 @@ async fn main() -> Result<()> {
                     }
                 );
                 println!("Liquidity: {}", pool.liquidity);
+
+                // ── Real P&L computation (SHADOW-03 / Phase 2) ─────────────────
+                // Decimals are not fetched in watch mode; use well-known values for
+                // SOL (9) / USDC (6) as a best-effort approximation (same as Raydium
+                // position command). Full decimal wiring arrives in Phase 5.
+                let scale_a = 10f64.powi(9); // SOL decimals
+                let scale_b = 10f64.powi(6); // USDC decimals
+
+                let accrued_a = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_a,
+                    pos.fee_growth_checkpoint_a,
+                    pos.liquidity,
+                );
+                let accrued_b = analytics::pnl::compute_accrued_fees(
+                    pool.fee_growth_global_b,
+                    pos.fee_growth_checkpoint_b,
+                    pos.liquidity,
+                );
+                let computed_fees_earned =
+                    (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
+                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+
+                // Use cached entry price when available; fall back to current price
+                // which yields IL = 0 (conservative — avoids spurious error rows).
+                let entry_price = cache::load_entry_price(&mint_str).unwrap_or(price_current);
+
+                let amounts_result = analytics::amounts::compute_token_amounts(
+                    pos.liquidity,
+                    pool.sqrt_price,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                );
+                let computed_position_value = match &amounts_result {
+                    Ok(a) => {
+                        a.amount_a as f64 / scale_a * price_current
+                            + a.amount_b as f64 / scale_b
+                    }
+                    Err(_) => 0.0,
+                };
+
+                let price_lower = analytics::greeks::sqrt_q64_to_price(
+                    orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_lower_index),
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_upper_index),
+                );
+                let il_fraction = analytics::pnl::compute_il(
+                    entry_price,
+                    price_current,
+                    price_lower,
+                    price_upper,
+                );
+                let computed_il_usd = il_fraction * computed_position_value;
+
+                // ── Shadow rebalance decision (SHADOW-02) ───────────────────────
+                // Wrap the full decision path so any error sets error_flag=true rather
+                // than aborting the tick callback (T-02-05).
+                let rebalance_config = strategy::RebalanceConfig::default();
+                let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
+                    strategy::should_rebalance(
+                        pool.tick_current_index,
+                        pos.tick_lower_index,
+                        pos.tick_upper_index,
+                        computed_fees_earned + computed_il_usd,
+                        &rebalance_config,
+                    )
+                );
+
+                let is_rebalance = matches!(
+                    &decision_result,
+                    Ok(strategy::RebalanceDecision::Rebalance { .. })
+                );
+
+                // Gate: if a rebalance plan were to be submitted, check shadow guard first.
+                // In Phase 2 there is no real plan — we use the pool state as the proxy.
+                // Real rebalance plan construction arrives in Phase 5.
+                if is_rebalance {
+                    let plan_proxy = format!(
+                        "rebalance_needed tick={} range=[{},{}]",
+                        pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
+                    );
+                    if let Err(e) = guard.submit(&plan_proxy) {
+                        tracing::warn!(error = %e, "rebalance submission gated");
+                    }
+                }
+
+                // Build and spawn the shadow_rebalances row when a rebalance decision fires.
+                // We also write on error so the gate query in Plan 03 can count bad rows.
+                if let Some(ref pg) = db_pool {
+                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
+                        match &decision_result {
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
+                                let plan = execution::build_rebalance_plan(
+                                    &mint_str,
+                                    pos.tick_lower_index,
+                                    pos.tick_upper_index,
+                                    pool.tick_spacing as i32,
+                                );
+                                let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                                tracing::info!(
+                                    pool = %pool_addr_clone,
+                                    trigger = %reason,
+                                    price = price_current,
+                                    error = false,
+                                    "shadow rebalance decision"
+                                );
+                                Some(storage::writer::ShadowRebalanceRow {
+                                    pool_address: pool_addr_clone.clone(),
+                                    trigger_reason: reason.replace(' ', "_"),
+                                    price: price_current,
+                                    simulated_range_width: Some(range_width),
+                                    simulated_fees_earned: Some(computed_fees_earned),
+                                    simulated_il_usd: Some(computed_il_usd),
+                                    simulated_net_pnl: Some(
+                                        computed_fees_earned - computed_il_usd.abs(),
+                                    ),
+                                    error_flag: false,
+                                    error_message: None,
+                                })
+                            }
+                            Ok(strategy::RebalanceDecision::Hold { .. }) => {
+                                // No rebalance needed this tick — do not write a row.
+                                None
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    pool = %pool_addr_clone,
+                                    error = %e,
+                                    "shadow rebalance decision error"
+                                );
+                                Some(storage::writer::ShadowRebalanceRow {
+                                    pool_address: pool_addr_clone.clone(),
+                                    trigger_reason: "error".to_string(),
+                                    price: price_current,
+                                    simulated_range_width: None,
+                                    simulated_fees_earned: None,
+                                    simulated_il_usd: None,
+                                    simulated_net_pnl: None,
+                                    error_flag: true,
+                                    error_message: Some(e.clone()),
+                                })
+                            }
+                        };
+
+                    if let Some(row) = shadow_row {
+                        storage::writer::spawn_shadow_write(pg.clone(), row);
+                    }
+                }
+
+                // ── Persist tick snapshot ───────────────────────────────────────
+                if let Some(ref pg) = db_pool {
+                    // Extract Solana slot from the accountNotification context.
+                    // Shape: {"params":{"result":{"context":{"slot": N},...},...},...}
+                    let slot: i64 = json
+                        .pointer("/params/result/context/slot")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+
+                    let now = chrono::Utc::now();
+
+                    let tick = storage::writer::PoolTick {
+                        pool_address: pool_addr_clone.clone(),
+                        slot,
+                        tick_current: pool.tick_current_index,
+                        sqrt_price: pool.sqrt_price,
+                        liquidity: pool.liquidity,
+                        fee_growth_global_a: pool.fee_growth_global_a,
+                        fee_growth_global_b: pool.fee_growth_global_b,
+                        observed_at: now,
+                    };
+
+                    // Await write_pool_tick (durability checkpoint). The callback
+                    // runs inside a tokio runtime; block_in_place lets us call
+                    // block_on without violating single-threaded executor rules.
+                    let write_result =
+                        tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(storage::writer::write_pool_tick(pg, &tick))
+                        });
+                    if let Err(e) = write_result {
+                        tracing::warn!(error = %e, "pool_ticks write failed");
+                    }
+
+                    let snap = storage::writer::PnlSnapshot {
+                        mint: mint_str.clone(),
+                        pool_address: pool_addr_clone.clone(),
+                        fees_earned: computed_fees_earned,
+                        il_usd: computed_il_usd,
+                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                        position_value: computed_position_value,
+                        price: price_current,
+                        observed_at: now,
+                    };
+                    // Fire-and-forget: does not block tick processing (PERSIST-03).
+                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap));
+                }
             });
 
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
