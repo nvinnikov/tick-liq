@@ -1,4 +1,5 @@
 pub mod positions;
+pub mod writer;
 
 use anyhow::{Context, Result};
 use sqlx_core::executor::Executor;
