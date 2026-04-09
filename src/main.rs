@@ -108,7 +108,12 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Simulate LP P&L over a synthetic price path (GBM)
+    /// Simulate LP P&L over a synthetic price path (GBM) or replay real DB ticks.
+    ///
+    /// GBM mode (default): requires --entry-price, --price-lower, --price-upper.
+    ///
+    /// DB mode (--pool <ADDR>): reads pool_ticks from TimescaleDB for the given
+    /// address and date range. Requires --db-url / DATABASE_URL to be set.
     Backtest {
         /// Entry price (token A in token B units)
         #[arg(long)]
@@ -125,16 +130,16 @@ enum Commands {
         /// Initial position value in USD
         #[arg(long, default_value_t = 10_000.0)]
         capital: f64,
-        /// Number of days to simulate
+        /// Number of days to simulate (GBM mode only)
         #[arg(long, default_value_t = 30)]
         days: u32,
-        /// Annualised volatility, e.g. 0.80 for 80%
+        /// Annualised volatility, e.g. 0.80 for 80% (GBM mode only)
         #[arg(long, default_value_t = 0.80)]
         volatility: f64,
-        /// Estimated daily volume through the pool in USD
+        /// Estimated daily volume through the pool in USD (GBM mode only)
         #[arg(long, default_value_t = 1_000_000.0)]
         daily_volume: f64,
-        /// Fraction of pool daily volume captured by this position (0.0–1.0); typical narrow range: 0.05–0.30
+        /// Fraction of pool daily volume captured by this position (0.0–1.0) (GBM mode only)
         #[arg(long, default_value_t = 0.10)]
         position_volume_share: f64,
         /// Tick spacing of the pool (used for rebalance signal)
@@ -143,9 +148,31 @@ enum Commands {
         /// Auto-rebalance when out of range
         #[arg(long)]
         rebalance: bool,
-        /// Random seed for reproducibility
+        /// Random seed for reproducibility (GBM mode only)
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        // ── DB mode flags ────────────────────────────────────────────────────
+        /// Pool address to replay from TimescaleDB (enables DB mode)
+        #[arg(long)]
+        pool: Option<String>,
+        /// Start date for DB replay (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        from: Option<String>,
+        /// End date for DB replay (YYYY-MM-DD, exclusive)
+        #[arg(long)]
+        to: Option<String>,
+        /// Position liquidity units held (required in DB mode)
+        #[arg(long, default_value_t = 0u64)]
+        position_liquidity: u64,
+        /// Ticks from range boundary that trigger near-edge rebalance (DB mode; 0 = off)
+        #[arg(long, default_value_t = 0i32)]
+        near_edge_ticks: i32,
+        /// Lower range width factor on rebalance (DB mode; e.g. 0.95 → lower = price * 0.95)
+        #[arg(long, default_value_t = 0.95f64)]
+        range_lower_factor: f64,
+        /// Upper range width factor on rebalance (DB mode; e.g. 1.05 → upper = price * 1.05)
+        #[arg(long, default_value_t = 1.05f64)]
+        range_upper_factor: f64,
     },
 }
 
@@ -1092,22 +1119,89 @@ async fn main() -> Result<()> {
             tick_spacing,
             rebalance,
             seed,
+            pool,
+            from,
+            to,
+            position_liquidity,
+            near_edge_ticks,
+            range_lower_factor,
+            range_upper_factor,
         } => {
-            let params = backtest::BacktestParams {
-                entry_price: *entry_price,
-                price_lower: *price_lower,
-                price_upper: *price_upper,
-                fee_rate_bps: *fee_bps,
-                initial_value_usd: *capital,
-                days: *days,
-                annual_volatility: *volatility,
-                daily_volume_usd: *daily_volume,
-                position_volume_share: *position_volume_share,
-                tick_spacing: *tick_spacing,
-                strategy_rebalance: *rebalance,
-            };
-            let result = backtest::run(&params, *seed);
-            backtest::print_results(&result);
+            if let Some(pool_addr) = pool {
+                // ── DB mode: replay real pool_ticks from TimescaleDB ──────────
+                use chrono::NaiveDate;
+
+                let db_url = cli
+                    .db_url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--db-url or DATABASE_URL is required for DB-mode backtest"))?;
+
+                let from_date: NaiveDate = from
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--from <YYYY-MM-DD> is required in DB mode"))?
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--from must be a valid date (YYYY-MM-DD)"))?;
+
+                let to_date: NaiveDate = to
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--to <YYYY-MM-DD> is required in DB mode"))?
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--to must be a valid date (YYYY-MM-DD)"))?;
+
+                if to_date <= from_date {
+                    anyhow::bail!("--to must be after --from");
+                }
+
+                let pg = storage::connect(db_url).await?;
+                let ticks =
+                    storage::tick_reader::read_ticks(&pg, pool_addr, from_date, to_date).await?;
+
+                if ticks.is_empty() {
+                    anyhow::bail!(
+                        "No ticks found for pool {} between {} and {}. \
+                         Accumulate data with `watch` before running a DB backtest.",
+                        pool_addr, from_date, to_date
+                    );
+                }
+
+                let input = backtest::db_replay::DbBacktestInput {
+                    initial_value_usd: *capital,
+                    entry_price: *entry_price,
+                    price_lower: *price_lower,
+                    price_upper: *price_upper,
+                    fee_rate_bps: *fee_bps,
+                    tick_spacing: *tick_spacing,
+                    position_liquidity: *position_liquidity as u128,
+                    rebalance_cfg: strategy::RebalanceConfig {
+                        rebalance_out_of_range: *rebalance,
+                        near_edge_ticks: *near_edge_ticks,
+                        min_net_pnl_usd: 0.0,
+                    },
+                    range_factor_lower: *range_lower_factor,
+                    range_factor_upper: *range_upper_factor,
+                };
+
+                let result = backtest::db_replay::run_db_backtest(input, &ticks)?;
+                println!("Backtest (DB mode) — {} ticks replayed", ticks.len());
+                backtest::print_results(&result);
+            } else {
+                // ── GBM mode: synthetic price path simulation ─────────────────
+                let params = backtest::BacktestParams {
+                    entry_price: *entry_price,
+                    price_lower: *price_lower,
+                    price_upper: *price_upper,
+                    fee_rate_bps: *fee_bps,
+                    initial_value_usd: *capital,
+                    days: *days,
+                    annual_volatility: *volatility,
+                    daily_volume_usd: *daily_volume,
+                    position_volume_share: *position_volume_share,
+                    tick_spacing: *tick_spacing,
+                    strategy_rebalance: *rebalance,
+                };
+                let result = backtest::run(&params, *seed);
+                backtest::print_results(&result);
+            }
         }
         Commands::Hedge { mint, dry_run } => {
             if !*dry_run {
