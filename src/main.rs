@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 mod analytics;
 mod backtest;
+mod cache;
 mod data;
 mod display;
 mod execution;
@@ -239,7 +240,16 @@ async fn main() -> Result<()> {
                     let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
                         + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                    let price_entry = entry_price.unwrap_or(0.0);
+                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                    let price_entry = if let Some(ep) = entry_price {
+                        cache::save_entry_price(mint, *ep)?;
+                        *ep
+                    } else if let Some(ep) = cache::load_entry_price(mint) {
+                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                        ep
+                    } else {
+                        0.0
+                    };
                     let il_fraction = analytics::pnl::compute_il(
                         price_entry,
                         price_current,
@@ -292,16 +302,95 @@ async fn main() -> Result<()> {
                         rpc.fetch_account_checked(&pos.pool_id.to_string(), &raydium_program)?;
                     let pool = protocols::raydium::parse_pool(&pool_data)?;
 
-                    let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
+                    use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                    println!("Raydium Position: {}", position_pda);
-                    println!("Pool:     {}", pos.pool_id);
-                    println!("Price:    ${:.4}", price_current);
-                    println!(
-                        "Tick:     {} (range: {} -- {})",
-                        pool.tick_current, pos.tick_lower_index, pos.tick_upper_index
+                    let price_current =
+                        analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
+                    let price_lower = analytics::greeks::sqrt_q64_to_price(
+                        tick_index_to_sqrt_price(pos.tick_lower_index),
                     );
-                    println!("Liquidity: {}", pos.liquidity);
+                    let price_upper = analytics::greeks::sqrt_q64_to_price(
+                        tick_index_to_sqrt_price(pos.tick_upper_index),
+                    );
+
+                    let in_range = pool.tick_current >= pos.tick_lower_index
+                        && pool.tick_current <= pos.tick_upper_index;
+                    let range_pct = if in_range && (price_upper - price_lower) > 0.0 {
+                        (price_current - price_lower) / (price_upper - price_lower) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    let amounts = analytics::amounts::compute_token_amounts(
+                        pos.liquidity,
+                        pool.sqrt_price_x64,
+                        pos.tick_lower_index,
+                        pos.tick_upper_index,
+                    )?;
+
+                    let greeks = analytics::greeks::compute_greeks(
+                        pos.liquidity,
+                        pool.sqrt_price_x64,
+                        pos.tick_lower_index,
+                        pos.tick_upper_index,
+                    );
+
+                    // TODO: Raydium fee tracking not yet wired (fee_growth_global not in pool struct)
+                    let fees_usd = 0.0_f64;
+
+                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                    let price_entry = if let Some(ep) = entry_price {
+                        cache::save_entry_price(mint, *ep)?;
+                        *ep
+                    } else if let Some(ep) = cache::load_entry_price(mint) {
+                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                        ep
+                    } else {
+                        0.0
+                    };
+                    let il_fraction = analytics::pnl::compute_il(
+                        price_entry,
+                        price_current,
+                        price_lower,
+                        price_upper,
+                    );
+
+                    // TODO: Raydium decimals should be fetched from mint metadata;
+                    // hardcoded to 9 (SOL) / 6 (USDC) as a temporary approximation.
+                    let decimals_a: u8 = 9;
+                    let decimals_b: u8 = 6;
+                    let scale_a = 10f64.powi(decimals_a as i32);
+                    let scale_b = 10f64.powi(decimals_b as i32);
+
+                    let position_value = amounts.amount_a as f64 / scale_a * price_current
+                        + amounts.amount_b as f64 / scale_b;
+                    let il_usd = il_fraction * position_value;
+
+                    let pnl = analytics::pnl::PnlResult {
+                        fees_usd,
+                        il_usd,
+                        net_usd: fees_usd + il_usd,
+                        initial_value_usd: position_value,
+                    };
+
+                    let summary = display::table::PositionSummary {
+                        pool_address: pos.pool_id.to_string(),
+                        fee_rate_bps: 0.0, // TODO: wire Raydium fee rate
+                        price_lower,
+                        price_upper,
+                        price_current,
+                        in_range,
+                        range_pct,
+                        amounts,
+                        decimals_a,
+                        decimals_b,
+                        symbol_a: "SOL".to_string(),  // TODO: fetch from mint metadata
+                        symbol_b: "USDC".to_string(), // TODO: fetch from mint metadata
+                        pnl,
+                        greeks,
+                    };
+
+                    display::table::print_position(&summary);
                 }
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
@@ -541,7 +630,16 @@ async fn main() -> Result<()> {
                 let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                let price_entry = entry_price.unwrap_or(0.0);
+                // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                let price_entry = if let Some(ep) = entry_price {
+                    cache::save_entry_price(mint, *ep)?;
+                    *ep
+                } else if let Some(ep) = cache::load_entry_price(mint) {
+                    tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                    ep
+                } else {
+                    0.0
+                };
                 let il_fraction = analytics::pnl::compute_il(
                     price_entry,
                     price_current,
