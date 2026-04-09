@@ -4,6 +4,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 mod analytics;
+mod backtest;
 mod data;
 mod display;
 mod execution;
@@ -88,6 +89,42 @@ enum Commands {
         /// Preview only; sending is not yet supported
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Simulate LP P&L over a synthetic price path (GBM)
+    Backtest {
+        /// Entry price (token A in token B units)
+        #[arg(long)]
+        entry_price: f64,
+        /// Lower bound of LP range
+        #[arg(long)]
+        price_lower: f64,
+        /// Upper bound of LP range
+        #[arg(long)]
+        price_upper: f64,
+        /// Pool fee rate in basis points (e.g. 5 = 0.05%)
+        #[arg(long, default_value_t = 5.0)]
+        fee_bps: f64,
+        /// Initial position value in USD
+        #[arg(long, default_value_t = 10_000.0)]
+        capital: f64,
+        /// Number of days to simulate
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+        /// Annualised volatility, e.g. 0.80 for 80%
+        #[arg(long, default_value_t = 0.80)]
+        volatility: f64,
+        /// Estimated daily volume through the pool in USD
+        #[arg(long, default_value_t = 1_000_000.0)]
+        daily_volume: f64,
+        /// Tick spacing of the pool (used for rebalance signal)
+        #[arg(long, default_value_t = 64)]
+        tick_spacing: i32,
+        /// Auto-rebalance when out of range
+        #[arg(long)]
+        rebalance: bool,
+        /// Random seed for reproducibility
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
     },
 }
 
@@ -595,6 +632,34 @@ async fn main() -> Result<()> {
                 pool.tick_spacing as i32,
             );
             execution::print_dry_run(&plan);
+        }
+        Commands::Backtest {
+            entry_price,
+            price_lower,
+            price_upper,
+            fee_bps,
+            capital,
+            days,
+            volatility,
+            daily_volume,
+            tick_spacing,
+            rebalance,
+            seed,
+        } => {
+            let params = backtest::BacktestParams {
+                entry_price: *entry_price,
+                price_lower: *price_lower,
+                price_upper: *price_upper,
+                fee_rate_bps: *fee_bps,
+                initial_value_usd: *capital,
+                days: *days,
+                annual_volatility: *volatility,
+                daily_volume_usd: *daily_volume,
+                tick_spacing: *tick_spacing,
+                strategy_rebalance: *rebalance,
+            };
+            let result = backtest::run(&params, *seed);
+            backtest::print_results(&result);
         }
         Commands::Hedge { mint, dry_run } => {
             if !*dry_run {

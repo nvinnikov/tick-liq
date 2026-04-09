@@ -1,6 +1,21 @@
 # tick-liq
 
-Automated LP (Liquidity Provider) manager for concentrated-liquidity (CLMM) pools on Solana. Inspects Orca Whirlpool and Raydium CLMM positions, computes real-time P&L / Greeks / IL, watches pools over WebSocket, evaluates rebalance signals, and generates dry-run execution plans.
+Automated LP manager for Solana CLMM pools (Orca Whirlpools / Raydium).
+Computes real-time P&L, impermanent loss, Greeks (delta/gamma),
+and generates rebalance + delta-hedge signals.
+
+```
+Pool:        Hp7...   fee 5 bps
+Price:       $24.1873   range [$22.50, $26.00]   IN-RANGE (62%)
+Amounts:     1.234 SOL   |   29.87 USDC
+Fees:        +$4.21    IL: -$0.83    Net: +$3.38
+Greeks:      delta=-0.0123  gamma=0.000041
+Decision:    HOLD (position healthy, net P&L positive)
+```
+
+Stack: **Rust · Tokio · Solana RPC/WebSocket · PostgreSQL/TimescaleDB · Anchor CPI**
+
+---
 
 ## Architecture
 
@@ -12,7 +27,8 @@ src/
 ├── data/        WebSocket pool subscription with reconnect + ping/pong
 ├── strategy/    Rebalance signal generator (pure logic, no Solana deps)
 ├── execution/   Dry-run rebalance planner + Drift hedge size estimator
-├── storage/     sqlx + TimescaleDB schema scaffold (positions, pool_ticks, pnl_history)
+├── backtest/    GBM price simulator — runs full data→math→signal pipeline offline
+├── storage/     PostgreSQL + TimescaleDB schema scaffold (positions, pool_ticks, pnl_history)
 ├── display/     Formatted CLI output + ASCII liquidity histogram
 └── rpc.rs       Solana RPC client with owner verification
 ```
@@ -112,6 +128,50 @@ lp-inspect hedge <MINT> --dry-run
 
 Fetches position Greeks, computes required Drift perp size to neutralize delta (long if delta<0, short if delta>0). Prints plan. No CPI sent. Requires `LP_INSPECTOR_KEYPAIR` env var.
 
+### `backtest` — offline LP simulation
+
+```
+lp-inspect backtest \
+  --entry-price 150.0 \
+  --price-lower 130.0 \
+  --price-upper 170.0 \
+  [--fee-bps 5] [--capital 10000] [--days 30] \
+  [--volatility 0.80] [--daily-volume 1000000] \
+  [--tick-spacing 64] [--rebalance] [--seed 42]
+```
+
+Simulates a CLMM position over a Geometric Brownian Motion price path using the same `src/math/` functions that power the live inspector (IL, fee accrual, delta/gamma). Shows per-day P&L table and summary stats. Add `--rebalance` to trigger automatic range resets when the position goes out of range.
+
+```
+lp-inspect backtest --entry-price 150 --price-lower 130 --price-upper 170 --days 30
+```
+
+```
+Backtest — CLMM LP Simulation
+────────────────────────────────────────────────────────────
+Entry:         $150.0000   Range: $130.0000 – $170.0000
+Fee:           5 bps   Vol: 80% ann.   Volume: $1000000/day
+Capital:       $10000   Days: 30
+────────────────────────────────────────────────────────────
+ Day       Price   InRange    CumFees          IL      NetP&L
+────────────────────────────────────────────────────────────
+   1    152.3841       yes       4.44        0.00        4.44
+   4    147.2091       yes      17.78       -0.57       17.21
+   8    139.6203        NO      22.22       -8.43       13.79
+  12    133.1047        NO      22.22      -15.21        7.01
+  16    148.7283       yes      39.98       -0.19       39.79
+  20    161.3840       yes      57.76       -0.71       57.05
+  23    154.9217       yes      71.07       -0.12       70.95
+  27    168.8912       yes      88.85       -1.47       87.38
+  30    162.3471       yes     101.28       -0.82      100.46
+════════════════════════════════════════════════════════════
+Fees earned:   $101.28  (1.0% of capital)
+Imperm. loss:  $-0.82  (-0.0% of capital)
+Net P&L:       $100.46  (1.0% of capital)
+Fee APY:       12.2%
+Days in range: 23/30 (77%)
+```
+
 ### `db migrate`
 
 ```
@@ -168,27 +228,3 @@ cargo fmt                         # format
 - 25+ unit tests across math, analytics, strategy, execution layers
 - 8 proptest invariants (amounts ≥ 0, IL ≤ 0, delta sign, impact monotonicity, …)
 - 20 golden reference vectors validated against Orca Whirlpool formulas
-
-## TODO / Refactoring backlog
-
-### High priority
-- [ ] **Raydium analytics parity** — wire `analytics::*` + `display::table::print_position` into Raydium branch (currently prints raw fields only)
-- [ ] **WS backoff reset** — `src/data/ws.rs` backoff doesn't reset after successful reconnect; saturates at 30s on flapping connections
-- [ ] **`impact` tick-array walk** — current constant-liquidity approximation degrades for trades crossing tick boundaries; wire `build_distribution` into impact math
-
-### Medium priority
-- [ ] **Storage writes** — `PositionsRepo` is a stub; implement `insert_position`, `record_pnl` using `sqlx::query`
-- [ ] **Rebalance execution** — `src/execution/rebalance.rs` builds the plan but doesn't construct actual Solana instructions (`close_position` / `collect_fees` / `open_position` CPI calls)
-- [ ] **Drift CPI** — `src/execution/hedge.rs` estimates size but doesn't build the Drift instruction; wire `anchor-client` CPI
-- [ ] **Entry-price persistence** — currently `--entry-price` is ephemeral; persist to `$XDG_CACHE_HOME/lp-inspect/<mint>` so IL is accurate across `watch` sessions
-
-### Low priority
-- [ ] **`src/math/` amounts module** — `compute_token_amounts` still lives in `analytics/amounts.rs` (uses `orca_whirlpools_core`); move pure math to `src/math/amounts.rs` once deps are decoupled
-- [ ] **RPC timeout + retry** — `src/rpc.rs` has no timeout or retry; add configurable `--rpc-timeout` and exponential backoff
-- [ ] **Raydium field-order verification** — `src/protocols/raydium.rs` field order not validated against program source; add fixture-based parse test
-- [ ] **LICENSE file** — license TBD
-
-## Roadmap
-
-- [`CLAUDE.md`](CLAUDE.md) — full vision: automated rebalancing, Drift perp hedging, TimescaleDB P&L history
-- [`docs/superpowers/plans/2026-04-07-followup-tasks.md`](docs/superpowers/plans/2026-04-07-followup-tasks.md) — completed F1–F14 task breakdown

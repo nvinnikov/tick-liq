@@ -10,3 +10,7 @@ config/config.toml
 
 # OS
 .DS_Store
+
+# Planning artifacts (internal — not for public repo)
+.planning/
+.claude/
