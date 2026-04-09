@@ -77,9 +77,9 @@ pub async fn query_24h_report(pool: &PgPool, pool_address: &str) -> Result<Repor
         .fetch_one(
             query(
                 "SELECT \
-                   COALESCE(SUM(fees_earned), 0.0) AS total_fees, \
-                   COALESCE(SUM(il_usd), 0.0) AS total_il, \
-                   COALESCE(SUM(net_pnl), 0.0) AS total_net_pnl, \
+                   COALESCE(MAX(fees_earned) - MIN(fees_earned), 0.0) AS total_fees, \
+                   COALESCE((ARRAY_AGG(il_usd ORDER BY time DESC))[1], 0.0) AS total_il, \
+                   COALESCE(MAX(fees_earned) - MIN(fees_earned) + (ARRAY_AGG(il_usd ORDER BY time DESC))[1], 0.0) AS total_net_pnl, \
                    COUNT(*) AS row_count, \
                    COALESCE(MIN(price) FILTER (WHERE price > 0), 0.0) AS min_price, \
                    COALESCE(MAX(price) FILTER (WHERE price > 0), 0.0) AS max_price \
