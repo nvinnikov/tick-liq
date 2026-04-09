@@ -1,5 +1,18 @@
 # tick-liq: Automated LP Manager for Solana CLMM
 
+## Current Milestone: v1.1 Maker Strategy Research
+
+**Goal:** Reverse-engineer professional CLMM market makers on pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` to produce a strategy spec that defines what we implement, the addressable fee surface, who we compete with, and our rebalance policy — research-only, no production code changes.
+
+**Target deliverables:**
+- Pool participant census + active-maker filter
+- Single-maker deep-dive (rebalance cadence, range widths, price-update frequency, realized fees)
+- Competitive landscape (pool + Raydium cross-reference)
+- Opportunity sizing (addressable fees, capture rate for our size)
+- Strategy spec feeding future rebalancer/hedger work
+
+**Required tooling:** Dune MCP (provided), Solana CLI + Helius RPC (needed), optional Birdeye/DexScreener key.
+
 ## What This Is
 
 Rust CLI that monitors Orca Whirlpool and Raydium CLMM positions in real time, calculates P&L (fees minus IL), and executes automated range rebalancing with optional delta hedging via Drift Protocol perps. Supports a mandatory 2-week shadow mode before any real capital moves, and wraps execution in a Telegram approval gate so the operator approves each rebalance before it fires.
@@ -27,12 +40,21 @@ Rust CLI that monitors Orca Whirlpool and Raydium CLMM positions in real time, c
 - ✓ Risk limits (drawdown/IL/margin-ratio) with per-limit actions — v1.0 ⚠ LP/hedge close CPIs deferred
 - ✓ Telegram bot (/approve, /status, /pause, /resume, /report) — v1.0
 
-### Active (v1.1 candidates)
+### Active (v1.1 — research-only milestone)
 
-- [ ] LIVE-02: Drift Protocol perp hedge update in the same rebalance cycle (deferred from v1.0)
+- [ ] RESEARCH-01: Enumerate all LP participants on pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` via Dune
+- [ ] RESEARCH-02: Filter active makers (business-like cadence) from passive LPs
+- [ ] RESEARCH-03: Deep-dive one maker — rebalance cadence, range widths, price-update frequency, realized fees
+- [ ] RESEARCH-04: Competitive landscape across the pool + Raydium cross-reference
+- [ ] RESEARCH-05: Opportunity sizing — addressable fee surface and plausible capture rate for our size
+- [ ] RESEARCH-06: Strategy spec deliverable — what to implement, surface, fees, competitors, our strategy
+
+### Deferred (post-v1.1)
+
+- [ ] LIVE-02: Drift Protocol perp hedge update in the rebalance cycle
 - [ ] LIVE-04: LP↔Drift atomicity — rollback if hedge update fails (blocked by LIVE-02)
-- [ ] RISK-01 (full): LP close CPI on drawdown breach (deferred — requires LIVE-02)
-- [ ] RISK-03 (full): Drift hedge close CPI on margin breach (deferred — requires LIVE-02)
+- [ ] RISK-01 (full): LP close CPI on drawdown breach (blocked by LIVE-02)
+- [ ] RISK-03 (full): Drift hedge close CPI on margin breach (blocked by LIVE-02)
 - [ ] E2E integration tests with funded devnet wallet
 
 ### Out of Scope
@@ -72,4 +94,4 @@ Rust CLI that monitors Orca Whirlpool and Raydium CLMM positions in real time, c
 | `block_in_place` for proposal await | `NotifyFn` is `Box<dyn Fn>` (sync); reuses existing pattern in watch loop | ✓ Good — consistent with existing block_in_place usage |
 
 ---
-*Last updated: 2026-04-10 after v1.0 milestone*
+*Last updated: 2026-04-15 — v1.1 milestone started (Maker Strategy Research)*
