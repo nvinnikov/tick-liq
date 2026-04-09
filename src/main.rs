@@ -458,17 +458,103 @@ async fn main() -> Result<()> {
 
             let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
 
-            let l = pool_state.liquidity as f64;
-            let sqrt_p = price_current.sqrt();
-            let amount_a = size / price_current;
-            let inv_sqrt_target = (1.0 / sqrt_p) - (amount_a / l);
+            // Attempt to fetch surrounding tick arrays for a more accurate estimate.
+            let whirlpool_pubkey = Pubkey::from_str(pool)?;
+            let tick_arrays_result = protocols::orca::fetch_tick_arrays(
+                &rpc,
+                &whirlpool_pubkey,
+                pool_state.tick_current_index,
+                pool_state.tick_spacing,
+            );
 
-            let (target_price, impact_pct) = if inv_sqrt_target > 0.0 {
-                let p_target = 1.0 / (inv_sqrt_target * inv_sqrt_target);
-                let pct = (p_target - price_current) / price_current * 100.0;
-                (p_target, pct)
-            } else {
-                (f64::INFINITY, f64::INFINITY)
+            let (target_price, impact_pct) = match tick_arrays_result {
+                Ok(tick_arrays) => {
+                    // Build tick delta list from fetched arrays.
+                    let mut tick_deltas: Vec<(i32, i128)> = Vec::new();
+                    for ta in &tick_arrays {
+                        for (i, tick) in ta.ticks.iter().enumerate() {
+                            if tick.initialized {
+                                let tick_index = ta.start_tick_index
+                                    + (i as i32) * (pool_state.tick_spacing as i32);
+                                tick_deltas.push((tick_index, tick.liquidity_net));
+                            }
+                        }
+                    }
+
+                    // Build distribution around current tick (16 buckets each side).
+                    let distribution = analytics::depth::build_distribution(
+                        &tick_deltas,
+                        pool_state.liquidity,
+                        pool_state.tick_current_index,
+                        pool_state.tick_spacing as i32,
+                        16,
+                    );
+
+                    // Find the bucket containing the current tick (it is the middle bucket).
+                    // Walk buckets in the buy direction (ascending price) consuming USD.
+                    let mid = distribution.len() / 2;
+                    let mut remaining = *size;
+                    let mut final_price = price_current;
+
+                    'walk: for bucket in &distribution[mid..] {
+                        let l = bucket.liquidity as f64;
+                        if l == 0.0 {
+                            continue;
+                        }
+                        // Bucket price is the mid-tick price; use it as the bucket end for the
+                        // next bucket step.  For the current bucket we step from price_current.
+                        let p_start = final_price;
+                        let p_end = bucket.price;
+                        if p_end <= p_start {
+                            continue;
+                        }
+                        let sqrt_start = p_start.sqrt();
+                        let sqrt_end = p_end.sqrt();
+                        // USD to consume this full bucket (buying token A, price rises).
+                        let amount_a_full = l * (1.0 / sqrt_start - 1.0 / sqrt_end).abs();
+                        let usd_full = amount_a_full * p_start;
+                        if remaining <= usd_full {
+                            // Trade ends inside this bucket.
+                            let amount_a = remaining / p_start;
+                            let inv_sqrt_target = 1.0 / sqrt_start - amount_a / l;
+                            if inv_sqrt_target > 0.0 {
+                                final_price = 1.0 / (inv_sqrt_target * inv_sqrt_target);
+                            } else {
+                                final_price = f64::INFINITY;
+                            }
+                            remaining = 0.0;
+                            break 'walk;
+                        }
+                        remaining -= usd_full;
+                        final_price = p_end;
+                    }
+
+                    if remaining > 0.0 {
+                        // Ran out of buckets — trade exhausts sampled liquidity.
+                        (f64::INFINITY, f64::INFINITY)
+                    } else {
+                        let pct = (final_price - price_current) / price_current * 100.0;
+                        (final_price, pct)
+                    }
+                }
+                Err(e) => {
+                    // Fall back to constant-L approximation.
+                    tracing::warn!(
+                        "tick-array fetch failed ({}); falling back to constant-L approximation",
+                        e
+                    );
+                    let l = pool_state.liquidity as f64;
+                    let sqrt_p = price_current.sqrt();
+                    let amount_a = size / price_current;
+                    let inv_sqrt_target = (1.0 / sqrt_p) - (amount_a / l);
+                    if inv_sqrt_target > 0.0 {
+                        let p_target = 1.0 / (inv_sqrt_target * inv_sqrt_target);
+                        let pct = (p_target - price_current) / price_current * 100.0;
+                        (p_target, pct)
+                    } else {
+                        (f64::INFINITY, f64::INFINITY)
+                    }
+                }
             };
 
             println!("Pool:          {}", pool);
