@@ -40,7 +40,12 @@ pub async fn watch_account(
                 info!("WS watch: clean shutdown");
                 return;
             }
-            SessionResult::Reconnect(reason) => {
+            SessionResult::Reconnect { reason, connected } => {
+                if connected {
+                    // The WS handshake succeeded; session dropped later.
+                    // Reset so flapping connections don't saturate at 30 s.
+                    backoff = RECONNECT_BASE;
+                }
                 warn!("WS watch: session ended ({}), reconnecting in {:?}", reason, backoff);
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
@@ -57,7 +62,14 @@ pub async fn watch_account(
 
 enum SessionResult {
     Shutdown,
-    Reconnect(String),
+    /// Session ended and the caller should reconnect.
+    ///
+    /// `connected: true`  — the WebSocket handshake itself succeeded; the
+    ///                       session ended later (subscribe error, ping timeout,
+    ///                       stream closed, etc.).  Backoff should reset to base.
+    /// `connected: false` — `connect_async` failed immediately.  Backoff should
+    ///                       keep growing.
+    Reconnect { reason: String, connected: bool },
 }
 
 async fn run_session(
@@ -71,7 +83,7 @@ async fn run_session(
             // Successful connect resets backoff — caller resets after we return.
             pair
         }
-        Err(e) => return SessionResult::Reconnect(format!("connect error: {e}")),
+        Err(e) => return SessionResult::Reconnect { reason: format!("connect error: {e}"), connected: false },
     };
 
     let (mut write, mut read) = ws_stream.split();
@@ -83,7 +95,7 @@ async fn run_session(
         "params": [account, {"encoding": "base64", "commitment": "confirmed"}]
     });
     if let Err(e) = write.send(Message::Text(subscribe.to_string())).await {
-        return SessionResult::Reconnect(format!("subscribe send error: {e}"));
+        return SessionResult::Reconnect { reason: format!("subscribe send error: {e}"), connected: true };
     }
 
     info!("WS watch: subscribed to {}", account);
@@ -98,7 +110,7 @@ async fn run_session(
         // Check pong timeout.
         if let Some(deadline) = pong_deadline {
             if tokio::time::Instant::now() >= deadline {
-                return SessionResult::Reconnect("pong timeout".to_string());
+                return SessionResult::Reconnect { reason: "pong timeout".to_string(), connected: true };
             }
         }
 
@@ -113,7 +125,7 @@ async fn run_session(
             // Periodic ping.
             _ = ping_interval.tick() => {
                 if let Err(e) = write.send(Message::Ping(vec![])).await {
-                    return SessionResult::Reconnect(format!("ping send error: {e}"));
+                    return SessionResult::Reconnect { reason: format!("ping send error: {e}"), connected: true };
                 }
                 pong_deadline = Some(tokio::time::Instant::now() + PONG_TIMEOUT);
             }
@@ -122,12 +134,12 @@ async fn run_session(
             msg = read.next() => {
                 match msg {
                     None => {
-                        return SessionResult::Reconnect("stream closed".to_string());
+                        return SessionResult::Reconnect { reason: "stream closed".to_string(), connected: true };
                     }
                     Some(Err(e)) => {
                         warn!("WS watch: message error: {}", e);
                         // Error tolerance: log and reconnect rather than panic.
-                        return SessionResult::Reconnect(format!("message error: {e}"));
+                        return SessionResult::Reconnect { reason: format!("message error: {e}"), connected: true };
                     }
                     Some(Ok(Message::Pong(_))) => {
                         pong_deadline = None;
@@ -135,11 +147,11 @@ async fn run_session(
                     Some(Ok(Message::Ping(data))) => {
                         // Server-initiated ping — reply with pong.
                         if let Err(e) = write.send(Message::Pong(data)).await {
-                            return SessionResult::Reconnect(format!("pong send error: {e}"));
+                            return SessionResult::Reconnect { reason: format!("pong send error: {e}"), connected: true };
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        return SessionResult::Reconnect("server closed connection".to_string());
+                        return SessionResult::Reconnect { reason: "server closed connection".to_string(), connected: true };
                     }
                     Some(Ok(Message::Text(text))) => {
                         handle_text(&text, on_notify);
@@ -219,5 +231,59 @@ mod tests {
         let msg = r#"{"jsonrpc":"2.0","method":"accountNotification","params":{}}"#;
         handle_text(msg, &cb);
         assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Verify that a successful connection (`connected: true`) resets backoff to
+    /// base, while a failed connect (`connected: false`) keeps growing it.
+    ///
+    /// This is a pure logic test — no actual WebSocket is involved.
+    #[test]
+    fn backoff_resets_after_successful_connect_and_grows_after_connect_fail() {
+        // Simulate the backoff logic from watch_account.
+        let mut backoff = RECONNECT_BASE;
+
+        // First attempt: connect_async fails → backoff grows.
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
+        if let SessionResult::Reconnect { connected, .. } = result {
+            if connected {
+                backoff = RECONNECT_BASE;
+            }
+            // after sleep we would double:
+            backoff = (backoff * 2).min(RECONNECT_MAX);
+        }
+        assert_eq!(backoff, Duration::from_secs(2), "backoff should double after connect fail");
+
+        // Double again (another connect fail):
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
+        if let SessionResult::Reconnect { connected, .. } = result {
+            if connected {
+                backoff = RECONNECT_BASE;
+            }
+            backoff = (backoff * 2).min(RECONNECT_MAX);
+        }
+        assert_eq!(backoff, Duration::from_secs(4));
+
+        // Now a session that connected but then dropped → backoff resets to base
+        // before sleeping, so next sleep is 1 s, then doubles to 2 s.
+        let result = SessionResult::Reconnect { reason: "stream closed".into(), connected: true };
+        if let SessionResult::Reconnect { connected, .. } = result {
+            if connected {
+                backoff = RECONNECT_BASE;
+            }
+            backoff = (backoff * 2).min(RECONNECT_MAX);
+        }
+        // reset to 1 s, then doubled → 2 s
+        assert_eq!(backoff, Duration::from_secs(2), "backoff should reset and then double once");
+
+        // Saturates at RECONNECT_MAX regardless of path.
+        backoff = RECONNECT_MAX;
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
+        if let SessionResult::Reconnect { connected, .. } = result {
+            if connected {
+                backoff = RECONNECT_BASE;
+            }
+            backoff = (backoff * 2).min(RECONNECT_MAX);
+        }
+        assert_eq!(backoff, RECONNECT_MAX, "backoff must not exceed RECONNECT_MAX");
     }
 }
