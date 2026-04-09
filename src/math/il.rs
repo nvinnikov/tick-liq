@@ -47,9 +47,9 @@ pub fn compute_il(price_entry: f64, price_current: f64, price_lower: f64, price_
     let sp0 = price_entry.sqrt().clamp(pa, pb);
     let sp1 = price_current.sqrt().clamp(pa, pb);
 
-    let ratio = sp1 / sp0;
-    // V_lp / V_hodl = 2*sqrt(ratio) / (1 + ratio)
-    let lp_relative = 2.0 * ratio.sqrt() / (1.0 + ratio);
+    // Standard CLMM IL: V_LP/V_HODL = 2√k/(1+k) where k = P1/P0.
+    // In sqrt-price terms: = 2·sp1·sp0 / (sp0² + sp1²)
+    let lp_relative = 2.0 * sp1 * sp0 / (sp0 * sp0 + sp1 * sp1);
 
     lp_relative - 1.0 // always <= 0
 }
