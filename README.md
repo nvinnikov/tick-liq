@@ -140,7 +140,7 @@ lp-inspect backtest \
   [--tick-spacing 64] [--rebalance] [--seed 42]
 ```
 
-Simulates a CLMM position over a Geometric Brownian Motion price path using the same `src/math/` functions that power the live inspector (IL, fee accrual, delta/gamma). Shows per-day P&L table and summary stats. Add `--rebalance` to trigger automatic range resets when the position goes out of range.
+Simulates a CLMM position over a Geometric Brownian Motion price path using the same `src/math/` functions that power the live inspector (IL, fee accrual). Shows per-day P&L table and summary stats. Add `--rebalance` to trigger automatic range resets when the position goes out of range.
 
 ```
 lp-inspect backtest --entry-price 150 --price-lower 130 --price-upper 170 --days 30
@@ -153,23 +153,24 @@ Entry:         $150.0000   Range: $130.0000 – $170.0000
 Fee:           5 bps   Vol: 80% ann.   Volume: $1000000/day
 Capital:       $10000   Days: 30
 ────────────────────────────────────────────────────────────
- Day       Price   InRange    CumFees          IL      NetP&L
+ Day       Price   InRange     CumFees          IL      NetP&L
 ────────────────────────────────────────────────────────────
-   1    152.3841       yes       4.44        0.00        4.44
-   4    147.2091       yes      17.78       -0.57       17.21
-   8    139.6203        NO      22.22       -8.43       13.79
-  12    133.1047        NO      22.22      -15.21        7.01
-  16    148.7283       yes      39.98       -0.19       39.79
-  20    161.3840       yes      57.76       -0.71       57.05
-  23    154.9217       yes      71.07       -0.12       70.95
-  27    168.8912       yes      88.85       -1.47       87.38
-  30    162.3471       yes     101.28       -0.82      100.46
+   1    157.5246       yes       50.00       -2.99       47.01
+   4    156.4987       yes      200.00       -2.25      197.75
+   7    134.5144       yes      350.00      -14.82      335.18
+  10    138.2244       yes      450.00       -8.35      441.65
+  13    125.9890        NO      500.00      -25.54      474.46
+  17    123.8809        NO      550.00      -25.54      524.46
+  20    118.4441        NO      550.00      -25.54      524.46
+  23    121.1127        NO      550.00      -25.54      524.46
+  26    116.0894        NO      550.00      -25.54      524.46
+  30    116.6243        NO      550.00      -25.54      524.46
 ════════════════════════════════════════════════════════════
-Fees earned:   $101.28  (1.0% of capital)
-Imperm. loss:  $-0.82  (-0.0% of capital)
-Net P&L:       $100.46  (1.0% of capital)
-Fee APY:       12.2%
-Days in range: 23/30 (77%)
+Fees earned:   $550.00  (5.5% of capital)
+Imperm. loss:  $-25.54  (-0.3% of capital)
+Net P&L:       $524.46  (5.2% of capital)
+Fee APY:       66.9%
+Days in range: 11/30 (37%)
 ```
 
 ### `db migrate`
