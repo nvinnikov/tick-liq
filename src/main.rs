@@ -29,6 +29,11 @@ struct Cli {
     #[arg(long, env = "DATABASE_URL")]
     db_url: Option<String>,
 
+    /// Per-request RPC timeout in seconds (default 30). Each call is retried
+    /// up to 3 times with exponential backoff before failing.
+    #[arg(long, env = "RPC_TIMEOUT_SECS", default_value_t = 30u64)]
+    rpc_timeout: u64,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -166,7 +171,7 @@ async fn main() -> Result<()> {
             protocol,
             entry_price,
         } => {
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
 
             match protocol.as_str() {
                 "orca" => {
@@ -307,7 +312,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Watch { mint } => {
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
             let (position_pda, _) = Pubkey::find_program_address(
@@ -339,8 +344,9 @@ async fn main() -> Result<()> {
 
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
+            let rpc_timeout = cli.rpc_timeout;
             let on_notify = Box::new(move |_json: serde_json::Value| {
-                let rpc_inner = rpc::SolanaRpc::new(&rpc_url);
+                let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
                 print!("\x1B[2J\x1B[1;1H");
                 println!(
                     "[{}] Pool update received",
@@ -385,7 +391,7 @@ async fn main() -> Result<()> {
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
         }
         Commands::Depth { pool } => {
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
@@ -451,7 +457,7 @@ async fn main() -> Result<()> {
             display::table::print_depth_histogram(&distribution, price_current);
         }
         Commands::Impact { pool, size } => {
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
@@ -490,7 +496,7 @@ async fn main() -> Result<()> {
             } => {
                 use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+                let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
                 let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
                 let mint_pubkey = Pubkey::from_str(mint)?;
                 let (position_pda, _) = Pubkey::find_program_address(
@@ -612,7 +618,7 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
             let (position_pda, _) = Pubkey::find_program_address(
@@ -681,7 +687,7 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let rpc = rpc::SolanaRpc::new(&cli.rpc_url);
+            let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
             let (position_pda, _) = Pubkey::find_program_address(
