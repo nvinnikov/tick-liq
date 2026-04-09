@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 mod analytics;
 mod backtest;
+mod cache;
 mod data;
 mod display;
 mod execution;
@@ -239,7 +240,16 @@ async fn main() -> Result<()> {
                     let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
                         + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                    let price_entry = entry_price.unwrap_or(0.0);
+                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                    let price_entry = if let Some(ep) = entry_price {
+                        cache::save_entry_price(mint, *ep)?;
+                        *ep
+                    } else if let Some(ep) = cache::load_entry_price(mint) {
+                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                        ep
+                    } else {
+                        0.0
+                    };
                     let il_fraction = analytics::pnl::compute_il(
                         price_entry,
                         price_current,
@@ -328,7 +338,16 @@ async fn main() -> Result<()> {
                     // TODO: Raydium fee tracking not yet wired (fee_growth_global not in pool struct)
                     let fees_usd = 0.0_f64;
 
-                    let price_entry = entry_price.unwrap_or(0.0);
+                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                    let price_entry = if let Some(ep) = entry_price {
+                        cache::save_entry_price(mint, *ep)?;
+                        *ep
+                    } else if let Some(ep) = cache::load_entry_price(mint) {
+                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                        ep
+                    } else {
+                        0.0
+                    };
                     let il_fraction = analytics::pnl::compute_il(
                         price_entry,
                         price_current,
@@ -611,7 +630,16 @@ async fn main() -> Result<()> {
                 let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                let price_entry = entry_price.unwrap_or(0.0);
+                // Resolve entry price: CLI flag takes precedence, then cache, then 0.
+                let price_entry = if let Some(ep) = entry_price {
+                    cache::save_entry_price(mint, *ep)?;
+                    *ep
+                } else if let Some(ep) = cache::load_entry_price(mint) {
+                    tracing::info!("Loaded cached entry price: ${:.4}", ep);
+                    ep
+                } else {
+                    0.0
+                };
                 let il_fraction = analytics::pnl::compute_il(
                     price_entry,
                     price_current,
