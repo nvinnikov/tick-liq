@@ -1,7 +1,7 @@
 //! Backtest engine — simulates LP P&L over a synthetic price path.
 //!
 //! Generates a Geometric Brownian Motion price series from the current pool
-//! state, then applies CLMM math at each step (IL, fee accrual, Greeks).
+//! state, then applies CLMM math at each step (IL, fee accrual).
 //! Optionally fires rebalance events via the strategy signal module.
 
 use crate::math::il::compute_il;
@@ -9,6 +9,7 @@ use crate::strategy::{self, RebalanceConfig, RebalanceDecision};
 
 // ── Parameters ────────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct BacktestParams {
     /// Price when the position was opened (token A in token B units).
     pub entry_price: f64,
@@ -26,6 +27,8 @@ pub struct BacktestParams {
     pub annual_volatility: f64,
     /// Estimated daily volume through the pool in USD.
     pub daily_volume_usd: f64,
+    /// Fraction of pool daily volume captured by this position (0.0–1.0). Typical narrow range: 0.05–0.30.
+    pub position_volume_share: f64,
     /// Tick spacing (used to map prices back to integer ticks for the signal).
     pub tick_spacing: i32,
     /// Fire a rebalance when out of range; resets IL clock and range.
@@ -34,6 +37,7 @@ pub struct BacktestParams {
 
 // ── Per-day snapshot ──────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct DayResult {
     pub day: u32,
     pub price: f64,
@@ -45,6 +49,7 @@ pub struct DayResult {
 
 // ── Aggregate result ──────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct BacktestResult {
     pub params_snapshot: ParamsSnapshot,
     pub days: Vec<DayResult>,
@@ -56,6 +61,7 @@ pub struct BacktestResult {
     pub fee_apy_pct: f64,
 }
 
+#[derive(Debug)]
 pub struct ParamsSnapshot {
     pub entry_price: f64,
     pub price_lower: f64,
@@ -104,8 +110,8 @@ impl Prng {
 fn price_to_tick(price: f64, tick_spacing: i32) -> i32 {
     // tick = log_{1.0001}(price) = ln(price) / ln(1.0001)
     let raw = (price.ln() / 1.0001_f64.ln()).floor() as i32;
-    // Round down to nearest multiple of tick_spacing.
-    (raw / tick_spacing) * tick_spacing
+    // Round down to nearest multiple of tick_spacing (floor division for negative ticks).
+    raw.div_euclid(tick_spacing) * tick_spacing
 }
 
 // ── Core simulation ───────────────────────────────────────────────────────────
@@ -119,14 +125,6 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
     let drift = -0.5 * sigma * sigma * dt; // log-drift correction (μ = 0)
     let vol_step = sigma * dt.sqrt();
 
-    // Pool fee fraction per unit of volume that passes through the position.
-    // Approximation: position captures ~(range_width / total_range) share of volume.
-    // We estimate the position's share by its price range relative to ±50% of price.
-    let range_fraction = {
-        let range_width = params.price_upper - params.price_lower;
-        let total_span = params.entry_price * 1.0; // normalise to price
-        (range_width / total_span).min(1.0).max(0.0)
-    };
     let fee_fraction = params.fee_rate_bps / 10_000.0;
 
     let mut price = params.entry_price;
@@ -135,6 +133,7 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
     let mut price_upper = params.price_upper;
 
     let mut cumulative_fees = 0.0_f64;
+    let mut realized_il_usd = 0.0_f64;
     let mut total_rebalances: u32 = 0;
     let mut days_in_range: u32 = 0;
     let mut day_results: Vec<DayResult> = Vec::with_capacity(params.days as usize);
@@ -158,7 +157,7 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
 
         // Fees: only accrue when in range.
         let fees_today = if in_range {
-            params.daily_volume_usd * range_fraction * fee_fraction
+            params.daily_volume_usd * params.position_volume_share * fee_fraction
         } else {
             0.0
         };
@@ -187,6 +186,8 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
 
             if matches!(signal, RebalanceDecision::Rebalance { .. }) {
                 total_rebalances += 1;
+                // Accumulate IL realized at this rebalance before resetting.
+                realized_il_usd += il_usd;
                 // Reset: re-center range around current price (same width).
                 let half_width = (price_upper - price_lower) / 2.0;
                 entry_price = price;
@@ -209,8 +210,9 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
     // Final totals from last day snapshot.
     let last = day_results.last();
     let total_fees = last.map(|d| d.cumulative_fees_usd).unwrap_or(0.0);
-    let total_il = last.map(|d| d.il_usd).unwrap_or(0.0);
-    let net = last.map(|d| d.net_pnl_usd).unwrap_or(0.0);
+    let last_day_il = last.map(|d| d.il_usd).unwrap_or(0.0);
+    let total_il = realized_il_usd + last_day_il;
+    let net = total_fees + total_il;
 
     let fee_apy = if params.days > 0 && params.initial_value_usd > 0.0 {
         (total_fees / params.initial_value_usd) * (365.0 / params.days as f64) * 100.0
@@ -261,7 +263,6 @@ pub fn print_results(result: &BacktestResult) {
     println!("{}", "─".repeat(60));
 
     // Sample up to 10 evenly-spaced rows so the table isn't overwhelming.
-    let step = ((n as usize).saturating_sub(1)).max(1);
     let sample_days: Vec<usize> = if n <= 10 {
         (0..n as usize).collect()
     } else {
@@ -290,24 +291,26 @@ pub fn print_results(result: &BacktestResult) {
             d.il_usd,
             d.net_pnl_usd,
         );
-        let _ = step; // suppress unused warning
     }
 
     println!("{}", "═".repeat(60));
+    let fees_pct = if p.initial_value_usd > 0.0 { result.total_fees_usd / p.initial_value_usd * 100.0 } else { 0.0 };
+    let il_pct = if p.initial_value_usd > 0.0 { result.total_il_usd / p.initial_value_usd * 100.0 } else { 0.0 };
+    let net_pct = if p.initial_value_usd > 0.0 { result.net_pnl_usd / p.initial_value_usd * 100.0 } else { 0.0 };
     println!(
         "Fees earned:   ${:.2}  ({:.1}% of capital)",
         result.total_fees_usd,
-        result.total_fees_usd / p.initial_value_usd * 100.0
+        fees_pct,
     );
     println!(
         "Imperm. loss:  ${:.2}  ({:.1}% of capital)",
         result.total_il_usd,
-        result.total_il_usd / p.initial_value_usd * 100.0
+        il_pct,
     );
     println!(
         "Net P&L:       ${:.2}  ({:.1}% of capital)",
         result.net_pnl_usd,
-        result.net_pnl_usd / p.initial_value_usd * 100.0
+        net_pct,
     );
     println!("Fee APY:       {:.1}%", result.fee_apy_pct);
     println!(

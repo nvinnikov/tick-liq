@@ -116,6 +116,9 @@ enum Commands {
         /// Estimated daily volume through the pool in USD
         #[arg(long, default_value_t = 1_000_000.0)]
         daily_volume: f64,
+        /// Fraction of pool daily volume captured by this position (0.0–1.0); typical narrow range: 0.05–0.30
+        #[arg(long, default_value_t = 0.10)]
+        position_volume_share: f64,
         /// Tick spacing of the pool (used for rebalance signal)
         #[arg(long, default_value_t = 64)]
         tick_spacing: i32,
@@ -642,6 +645,7 @@ async fn main() -> Result<()> {
             days,
             volatility,
             daily_volume,
+            position_volume_share,
             tick_spacing,
             rebalance,
             seed,
@@ -655,6 +659,7 @@ async fn main() -> Result<()> {
                 days: *days,
                 annual_volatility: *volatility,
                 daily_volume_usd: *daily_volume,
+                position_volume_share: *position_volume_share,
                 tick_spacing: *tick_spacing,
                 strategy_rebalance: *rebalance,
             };
