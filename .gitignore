@@ -3,6 +3,7 @@
 
 # Config (may contain secrets)
 config/config.toml
+.env
 
 # IDE
 .idea/
