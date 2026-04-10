@@ -29,32 +29,90 @@ pub fn build_handler() -> UpdateHandler<anyhow::Error> {
     Update::filter_message().branch(command_handler)
 }
 
-async fn handle_status(bot: Bot, msg: Message, _state: BotState) -> anyhow::Result<()> {
+async fn handle_status(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+    // Auth gate: only authorized chat_id can interact (T-07-02)
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized /status attempt"
+        );
+        return Ok(());
+    }
     bot.send_message(msg.chat.id, "Status: not yet implemented (Plan 03)")
         .await?;
     Ok(())
 }
 
-async fn handle_pause(bot: Bot, msg: Message, _state: BotState) -> anyhow::Result<()> {
+async fn handle_pause(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+    // Auth gate: only authorized chat_id can interact (T-07-02)
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized /pause attempt"
+        );
+        return Ok(());
+    }
     bot.send_message(msg.chat.id, "Pause: not yet implemented (Plan 03)")
         .await?;
     Ok(())
 }
 
-async fn handle_resume(bot: Bot, msg: Message, _state: BotState) -> anyhow::Result<()> {
+async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+    // Auth gate: only authorized chat_id can interact (T-07-02)
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized /resume attempt"
+        );
+        return Ok(());
+    }
     bot.send_message(msg.chat.id, "Resume: not yet implemented (Plan 03)")
         .await?;
     Ok(())
 }
 
-async fn handle_report(bot: Bot, msg: Message, _state: BotState) -> anyhow::Result<()> {
+async fn handle_report(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+    // Auth gate: only authorized chat_id can interact (T-07-02)
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized /report attempt"
+        );
+        return Ok(());
+    }
     bot.send_message(msg.chat.id, "Report: not yet implemented (Plan 03)")
         .await?;
     Ok(())
 }
 
-async fn handle_approve(bot: Bot, msg: Message, _state: BotState) -> anyhow::Result<()> {
-    bot.send_message(msg.chat.id, "Approve: not yet implemented (Plan 02)")
-        .await?;
+async fn handle_approve(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+    // Auth gate: only authorized chat_id can approve (T-07-02)
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized /approve attempt"
+        );
+        return Ok(());
+    }
+
+    let sender = {
+        let mut lock = state
+            .pending_approval
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        lock.take()
+    };
+
+    match sender {
+        Some(tx) => {
+            let _ = tx.send(true);
+            bot.send_message(msg.chat.id, "Approved. Executing rebalance.")
+                .await?;
+        }
+        None => {
+            bot.send_message(msg.chat.id, "No pending rebalance to approve.")
+                .await?;
+        }
+    }
     Ok(())
 }
