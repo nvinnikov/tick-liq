@@ -11,6 +11,7 @@ enum RunMode {
 
 mod analytics;
 mod backtest;
+mod bot;
 mod cache;
 mod data;
 mod display;
@@ -81,6 +82,14 @@ enum Commands {
         /// When below this, Drift hedge close is logged (CPI deferred to LIVE-02).
         #[arg(long)]
         drift_min_margin_ratio: Option<f64>,
+        /// Enable Telegram bot for rebalance approvals and operator commands.
+        /// Requires TELEGRAM_BOT_TOKEN env var.
+        #[arg(long)]
+        telegram: bool,
+        /// Telegram approval timeout in seconds (default 300 = 5 min).
+        /// Rebalance is skipped if /approve not received within this window.
+        #[arg(long, default_value_t = 300u64)]
+        approve_timeout_secs: u64,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -457,6 +466,8 @@ async fn main() -> Result<()> {
             max_drawdown,
             max_il,
             drift_min_margin_ratio,
+            telegram,
+            approve_timeout_secs,
         } => {
             // Validate risk limit flags
             if let Some(dd) = max_drawdown {
@@ -595,6 +606,38 @@ async fn main() -> Result<()> {
                     None
                 }
             };
+
+            // ── Telegram bot (D-01: integrated tokio task) ──────────────────────
+            let pending_approval: std::sync::Arc<
+                std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(None));
+
+            let _bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
+                match (&db_pool, &risk_monitor_opt) {
+                    (Some(pg), Some(rm)) => {
+                        let bot_state = bot::BotState {
+                            db_pool: pg.clone(),
+                            risk_monitor: rm.clone(),
+                            pool_address: pool_addr.clone(),
+                            mint: mint.clone(),
+                            pending_approval: pending_approval.clone(),
+                        };
+                        let handle = bot::spawn_bot(bot_state).await?;
+                        tracing::info!("Telegram bot started");
+                        Some(handle)
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "--telegram requires DATABASE_URL and risk monitor to be active"
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Log approve_timeout_secs for use by Plan 02 approval flow.
+            tracing::debug!(approve_timeout_secs, "bot approval timeout configured");
 
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
