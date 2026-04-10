@@ -91,8 +91,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Add whirlpool-cpi deps + implement OrcaExecutor with 4-step instruction builders and unit tests
-- [ ] 05-02-PLAN.md — Wire keypair loader + OrcaExecutor into watch loop; simulateTransaction integration tests
+- [x] 05-01-PLAN.md — Add whirlpool-cpi deps + implement OrcaExecutor with 4-step instruction builders and unit tests
+- [x] 05-02-PLAN.md — Wire keypair loader + OrcaExecutor into watch loop; simulateTransaction integration tests
 
 ### Phase 6: Risk Limits
 **Goal**: The running system enforces configurable hard limits on drawdown, instantaneous IL, and Drift margin ratio, taking the correct per-limit action automatically and surviving process restarts.
