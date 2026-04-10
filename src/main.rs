@@ -237,10 +237,10 @@ async fn main() -> Result<()> {
                     let pool = protocols::orca::parse_pool(&pool_data)?;
 
                     // Fetch real decimals and symbols from chain.
-                    let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
-                    let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
-                    let symbol_a = rpc.fetch_token_symbol(&pool._token_mint_a);
-                    let symbol_b = rpc.fetch_token_symbol(&pool._token_mint_b);
+                    let decimals_a = rpc.fetch_mint_decimals(&pool.token_mint_a)?;
+                    let decimals_b = rpc.fetch_mint_decimals(&pool.token_mint_b)?;
+                    let symbol_a = rpc.fetch_token_symbol(&pool.token_mint_a);
+                    let symbol_b = rpc.fetch_token_symbol(&pool.token_mint_b);
 
                     use analytics::greeks::sqrt_q64_to_price;
                     let price_current = sqrt_q64_to_price(pool.sqrt_price);
@@ -1032,8 +1032,8 @@ async fn main() -> Result<()> {
                     rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
                 let pool = protocols::orca::parse_pool(&pool_data)?;
 
-                let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
-                let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+                let decimals_a = rpc.fetch_mint_decimals(&pool.token_mint_a)?;
+                let decimals_b = rpc.fetch_mint_decimals(&pool.token_mint_b)?;
 
                 let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
                 let price_lower = analytics::greeks::sqrt_q64_to_price(

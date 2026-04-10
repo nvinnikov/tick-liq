@@ -31,6 +31,8 @@ const DISC: usize = 8;
 ///
 /// Reference: https://github.com/orca-so/whirlpools/blob/main/programs/whirlpool/src/state/whirlpool.rs
 #[derive(BorshDeserialize, Debug, Clone)]
+// token_vault_a/b and token_mint_a/b are used by orca_executor; suppress bin-target lint.
+#[allow(dead_code)]
 pub struct WhirlpoolPool {
     pub _whirlpools_config: Pubkey,
     pub _whirlpool_bump: [u8; 1],
@@ -43,11 +45,11 @@ pub struct WhirlpoolPool {
     pub tick_current_index: i32,
     pub _protocol_fee_owed_a: u64,
     pub _protocol_fee_owed_b: u64,
-    pub _token_mint_a: Pubkey,
-    pub _token_vault_a: Pubkey,
+    pub token_mint_a: Pubkey,       // needed for ATA derivation (renamed from _token_mint_a)
+    pub token_vault_a: Pubkey,      // needed for collect_fees accounts (renamed from _token_vault_a)
     pub fee_growth_global_a: u128,
-    pub _token_mint_b: Pubkey,
-    pub _token_vault_b: Pubkey,
+    pub token_mint_b: Pubkey,       // needed for ATA derivation (renamed from _token_mint_b)
+    pub token_vault_b: Pubkey,      // needed for collect_fees accounts (renamed from _token_vault_b)
     pub fee_growth_global_b: u128,
     pub _reward_last_updated_timestamp: u64,
     // reward_infos (3 × 128 bytes) omitted — they sit at the tail so dropping
@@ -111,6 +113,19 @@ pub fn tick_array_pda(whirlpool: &Pubkey, start_tick_index: i32) -> Pubkey {
             whirlpool.as_ref(),
             start_str.as_bytes(),
         ],
+        &whirlpool_program_pubkey(),
+    );
+    pda
+}
+
+/// Derive the position PDA for a given position mint pubkey.
+///
+/// Seeds: [b"position", position_mint.as_ref()] under the Whirlpool program.
+/// [VERIFIED: Orca Whirlpool program source, open_position.rs]
+#[allow(dead_code)]
+pub fn position_pda(position_mint: &Pubkey) -> Pubkey {
+    let (pda, _) = Pubkey::find_program_address(
+        &[b"position", position_mint.as_ref()],
         &whirlpool_program_pubkey(),
     );
     pda
