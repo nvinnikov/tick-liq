@@ -3,6 +3,11 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
+use sqlx_core::executor::Executor;
+use sqlx_core::query::query;
+use sqlx_core::row::Row;
+use sqlx_postgres::PgPool;
+use tracing::warn;
 
 use crate::storage::writer::PnlSnapshot;
 
@@ -73,6 +78,106 @@ impl RiskMonitor {
             max_il_pct,
             drift_min_margin_ratio,
         }
+    }
+
+    /// Load persisted `RiskState` from the DB, or insert a fresh default row if none exists.
+    ///
+    /// CRITICAL (RESEARCH.md Pitfall 2 / D-12): uses SELECT-then-INSERT to avoid ever
+    /// overwriting an existing `halt_flag = true` with a fresh default. The upsert
+    /// in `persist_state` only updates non-halt columns.
+    pub async fn load_or_init(pool: &PgPool, pool_address: &str) -> anyhow::Result<RiskState> {
+        // Attempt to fetch an existing row.
+        let row_opt = pool
+            .fetch_optional(
+                query("SELECT peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at \
+                       FROM risk_state WHERE pool_address = $1")
+                    .bind(pool_address),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("load_or_init SELECT failed: {}", e))?;
+
+        if let Some(row) = row_opt {
+            let halt_flag: bool = row.get("halt_flag");
+            if halt_flag {
+                tracing::error!(
+                    pool = %pool_address,
+                    "risk: halt_flag set from previous session -- rebalancing will remain halted until DB is manually cleared"
+                );
+            }
+            let state = RiskState {
+                pool_address: pool_address.to_string(),
+                peak_pnl: row.get("peak_pnl"),
+                current_drawdown_pct: row.get("current_drawdown_pct"),
+                pause_flag: row.get("pause_flag"),
+                halt_flag,
+                updated_at: row.get("updated_at"),
+            };
+            return Ok(state);
+        }
+
+        // No existing row — insert a fresh default and return it.
+        pool.execute(
+            query(
+                "INSERT INTO risk_state \
+                 (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at) \
+                 VALUES ($1, 0.0, 0.0, FALSE, FALSE, NOW()) \
+                 ON CONFLICT (pool_address) DO NOTHING",
+            )
+            .bind(pool_address),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("load_or_init INSERT failed: {}", e))?;
+
+        Ok(RiskState {
+            pool_address: pool_address.to_string(),
+            peak_pnl: 0.0,
+            current_drawdown_pct: 0.0,
+            pause_flag: false,
+            halt_flag: false,
+            updated_at: Utc::now(),
+        })
+    }
+
+    /// Persist `RiskState` to the DB via fire-and-forget spawn (RISK-04).
+    ///
+    /// Matches the `spawn_pnl_write` pattern in `storage::writer`: spawns a Tokio
+    /// task immediately so the caller (watch-loop tick handler) is never blocked by
+    /// DB I/O. Failures are logged via `tracing::warn!` with `pool_address`.
+    ///
+    /// Uses `ON CONFLICT ... DO UPDATE` — all fields except `pool_address` are
+    /// overwritten. `halt_flag` is intentionally included so a breach detected in
+    /// memory is immediately durably stored. Operators clear it via SQL (D-12).
+    pub fn persist_state(pool: PgPool, state: RiskState) {
+        tokio::spawn(async move {
+            let result = pool
+                .execute(
+                    query(
+                        "INSERT INTO risk_state \
+                         (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at) \
+                         VALUES ($1, $2, $3, $4, $5, NOW()) \
+                         ON CONFLICT (pool_address) DO UPDATE SET \
+                           peak_pnl = EXCLUDED.peak_pnl, \
+                           current_drawdown_pct = EXCLUDED.current_drawdown_pct, \
+                           pause_flag = EXCLUDED.pause_flag, \
+                           halt_flag = EXCLUDED.halt_flag, \
+                           updated_at = EXCLUDED.updated_at",
+                    )
+                    .bind(&state.pool_address)
+                    .bind(state.peak_pnl)
+                    .bind(state.current_drawdown_pct)
+                    .bind(state.pause_flag)
+                    .bind(state.halt_flag),
+                )
+                .await;
+
+            if let Err(e) = result {
+                warn!(
+                    error = %e,
+                    pool = %state.pool_address,
+                    "risk_state persist failed"
+                );
+            }
+        });
     }
 
     /// Evaluate all risk limits for the given P&L snapshot.
