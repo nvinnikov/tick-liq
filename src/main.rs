@@ -69,6 +69,10 @@ enum Commands {
         /// Run in live mode: submit real transactions (requires shadow gate passed)
         #[arg(long, conflicts_with = "shadow")]
         live: bool,
+        /// Maximum allowed price impact in basis points (1 bps = 0.01%).
+        /// Rebalances with simulated impact above this threshold are aborted.
+        #[arg(long, default_value_t = 50)]
+        max_slippage_bps: u32,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -439,7 +443,13 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
-        Commands::Watch { mint, shadow: _, live } => {
+        Commands::Watch { mint, shadow: _, live, max_slippage_bps } => {
+            if *max_slippage_bps == 0 || *max_slippage_bps > 10_000 {
+                anyhow::bail!(
+                    "--max-slippage-bps must be between 1 and 10000 (got {})",
+                    max_slippage_bps
+                );
+            }
             let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
             tracing::info!(mode = ?run_mode, "watch starting");
             let guard = match run_mode {
@@ -514,6 +524,8 @@ async fn main() -> Result<()> {
                 }
             });
 
+            // Copy CLI value before the 'static closure captures it.
+            let max_slippage_bps_val: u32 = *max_slippage_bps;
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
@@ -617,8 +629,8 @@ async fn main() -> Result<()> {
                 // Wrap the full decision path so any error sets error_flag=true rather
                 // than aborting the tick callback (T-02-05).
                 let rebalance_config = strategy::RebalanceConfig::default();
-                // Slippage config — CLI override arrives in Plan 04-03.
-                let slippage_config = strategy::SlippageConfig::default();
+                // Slippage config — wired from CLI --max-slippage-bps flag (Plan 04-03).
+                let slippage_config = strategy::SlippageConfig { max_bps: max_slippage_bps_val };
                 let decision_result: Result<strategy::RebalanceDecision, String> = Ok(
                     strategy::should_rebalance(
                         pool.tick_current_index,
