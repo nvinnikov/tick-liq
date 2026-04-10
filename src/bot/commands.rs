@@ -38,8 +38,50 @@ async fn handle_status(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
         );
         return Ok(());
     }
-    bot.send_message(msg.chat.id, "Status: not yet implemented (Plan 03)")
-        .await?;
+
+    match super::queries::query_status(&state.db_pool, &state.pool_address).await {
+        Ok(s) => {
+            let pause_status = if s.halt_flag {
+                "HALTED (drawdown limit)"
+            } else if s.operator_pause {
+                "PAUSED (operator)"
+            } else if s.pause_flag {
+                "PAUSED (IL limit)"
+            } else {
+                "ACTIVE"
+            };
+
+            let msg_text = format!(
+                "STATUS: {}\n\
+                 Pool: {}\n\
+                 Price: ${:.4}\n\
+                 Position value: ${:.2}\n\
+                 ---\n\
+                 Fees earned: ${:.4}\n\
+                 IL: ${:.4}\n\
+                 Net P&L: ${:.4}\n\
+                 ---\n\
+                 Drawdown: {:.2}%\n\
+                 Peak P&L: ${:.4}\n\
+                 Status: {}",
+                pause_status,
+                s.pool_address,
+                s.price,
+                s.position_value,
+                s.fees_earned,
+                s.il_usd,
+                s.net_pnl,
+                s.drawdown_pct,
+                s.peak_pnl,
+                pause_status,
+            );
+            bot.send_message(msg.chat.id, msg_text).await?;
+        }
+        Err(e) => {
+            bot.send_message(msg.chat.id, format!("Error fetching status: {}", e))
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -52,8 +94,25 @@ async fn handle_pause(bot: Bot, msg: Message, state: BotState) -> anyhow::Result
         );
         return Ok(());
     }
-    bot.send_message(msg.chat.id, "Pause: not yet implemented (Plan 03)")
-        .await?;
+
+    match super::queries::set_operator_pause(&state.db_pool, &state.pool_address, true).await {
+        Ok(()) => {
+            // Also update in-memory state so the watch loop sees it immediately
+            if let Ok(mut rm) = state.risk_monitor.lock() {
+                rm.state.operator_pause = true;
+            }
+            bot.send_message(
+                msg.chat.id,
+                "Rebalancing PAUSED (operator). Position stays open. Use /resume to restart.",
+            )
+            .await?;
+            tracing::info!(pool = %state.pool_address, "operator pause activated via Telegram");
+        }
+        Err(e) => {
+            bot.send_message(msg.chat.id, format!("Error: {}", e))
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -66,8 +125,36 @@ async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
         );
         return Ok(());
     }
-    bot.send_message(msg.chat.id, "Resume: not yet implemented (Plan 03)")
-        .await?;
+
+    match super::queries::set_operator_pause(&state.db_pool, &state.pool_address, false).await {
+        Ok(()) => {
+            // Update in-memory state. NOTE: does NOT clear pause_flag (D-04)
+            if let Ok(mut rm) = state.risk_monitor.lock() {
+                rm.state.operator_pause = false;
+            }
+            let warning = {
+                let rm = state
+                    .risk_monitor
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if rm.state.pause_flag {
+                    "\nNote: IL-triggered pause is still active. Rebalancing will resume when IL recovers."
+                } else {
+                    ""
+                }
+            };
+            bot.send_message(
+                msg.chat.id,
+                format!("Rebalancing RESUMED (operator).{}", warning),
+            )
+            .await?;
+            tracing::info!(pool = %state.pool_address, "operator pause cleared via Telegram");
+        }
+        Err(e) => {
+            bot.send_message(msg.chat.id, format!("Error: {}", e))
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -80,8 +167,39 @@ async fn handle_report(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
         );
         return Ok(());
     }
-    bot.send_message(msg.chat.id, "Report: not yet implemented (Plan 03)")
-        .await?;
+
+    match super::queries::query_24h_report(&state.db_pool, &state.pool_address).await {
+        Ok(r) => {
+            if r.row_count == 0 {
+                bot.send_message(msg.chat.id, "No data in the last 24 hours.")
+                    .await?;
+            } else {
+                let msg_text = format!(
+                    "24H REPORT\n\
+                     Pool: {}\n\
+                     Snapshots: {}\n\
+                     ---\n\
+                     Total fees: ${:.4}\n\
+                     Total IL: ${:.4}\n\
+                     Net P&L: ${:.4}\n\
+                     ---\n\
+                     Price range: ${:.4} - ${:.4}",
+                    state.pool_address,
+                    r.row_count,
+                    r.total_fees,
+                    r.total_il,
+                    r.total_net_pnl,
+                    r.earliest_price,
+                    r.latest_price,
+                );
+                bot.send_message(msg.chat.id, msg_text).await?;
+            }
+        }
+        Err(e) => {
+            bot.send_message(msg.chat.id, format!("Error: {}", e))
+                .await?;
+        }
+    }
     Ok(())
 }
 

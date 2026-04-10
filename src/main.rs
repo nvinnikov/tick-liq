@@ -579,6 +579,12 @@ async fn main() -> Result<()> {
                             "risk: pause_flag active from previous session -- rebalancing paused"
                         );
                     }
+                    if risk_state.operator_pause {
+                        tracing::warn!(
+                            pool = %pool_addr,
+                            "risk: operator_pause active from previous session -- rebalancing paused by operator"
+                        );
+                    }
 
                     // Derive Drift User PDA from keypair if available (for RISK-03).
                     // In shadow mode (no keypair), drift_user_pubkey = None -> Drift check skipped.
@@ -914,6 +920,17 @@ async fn main() -> Result<()> {
                             );
                             // Fall through to should_rebalance()
                         }
+                    }
+                }
+
+                // ── Operator pause gate (D-04) ─────────────────────────────────
+                // Check operator_pause AFTER risk gate, BEFORE should_rebalance.
+                // This is independent from IL-triggered pause_flag.
+                if let Some(ref risk_arc) = &risk_monitor_opt {
+                    let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
+                    if rm.state.operator_pause {
+                        tracing::debug!(pool = %pool_addr_clone, "operator pause active -- skipping rebalance");
+                        return;
                     }
                 }
 
