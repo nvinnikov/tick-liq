@@ -638,8 +638,28 @@ async fn main() -> Result<()> {
                 None
             };
 
-            // Log approve_timeout_secs for use by Plan 02 approval flow.
-            tracing::debug!(approve_timeout_secs, "bot approval timeout configured");
+            // ── Telegram proposal bot instance (Plan 02) ───────────────────────
+            // A separate Bot handle for sending proposal messages from the tick
+            // callback. Distinct from the dispatcher Bot inside spawn_bot() so the
+            // watch loop can call send_message without going through the dispatcher.
+            let telegram_bot: Option<teloxide::Bot> = if *telegram {
+                Some(teloxide::Bot::new(
+                    std::env::var("TELEGRAM_BOT_TOKEN")
+                        .map_err(|_| anyhow::anyhow!("TELEGRAM_BOT_TOKEN required"))?,
+                ))
+            } else {
+                None
+            };
+            let telegram_chat_id: Option<i64> = if *telegram {
+                Some(bot::load_chat_id()?)
+            } else {
+                None
+            };
+
+            // Capture timeout as an owned value for use in the closure.
+            let approve_timeout_secs_val: u64 = *approve_timeout_secs;
+
+            tracing::debug!(approve_timeout_secs_val, "bot approval timeout configured");
 
             println!("Watching {}  (Ctrl+C to stop)", mint);
             println!("WebSocket: {}", ws_url);
@@ -919,6 +939,94 @@ async fn main() -> Result<()> {
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
                 // Real rebalance plan construction arrives in Phase 5.
                 if is_rebalance {
+                    // ── Telegram approval gate (TG-01, TG-02) ──────────────────
+                    // When --telegram is active, send a proposal message and await
+                    // /approve within the configured timeout before proceeding.
+                    // The callback is a sync Fn so async calls use block_in_place.
+                    if let (Some(ref tg_bot), Some(tg_chat)) =
+                        (&telegram_bot, telegram_chat_id)
+                    {
+                        // Build plan to get range_width for the proposal message.
+                        let plan = execution::build_rebalance_plan(
+                            &mint_str,
+                            pos.tick_lower_index,
+                            pos.tick_upper_index,
+                            pool.tick_spacing as i32,
+                        );
+                        let trigger_reason = match &decision_result {
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
+                                reason.clone()
+                            }
+                            _ => "unknown".to_string(),
+                        };
+                        let proposal_data = bot::proposal::ProposalData {
+                            pool_address: pool_addr_clone.clone(),
+                            trigger_reason,
+                            price: price_current,
+                            simulated_fees_earned: computed_fees_earned,
+                            simulated_il_usd: computed_il_usd,
+                            simulated_net_pnl: computed_fees_earned
+                                - computed_il_usd.abs(),
+                            range_width: (plan.new_tick_upper - plan.new_tick_lower)
+                                as f64,
+                        };
+                        let chat_id = teloxide::types::ChatId(tg_chat);
+
+                        let approved = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async {
+                                match bot::proposal::send_proposal(
+                                    tg_bot,
+                                    chat_id,
+                                    &proposal_data,
+                                    &pending_approval,
+                                )
+                                .await
+                                {
+                                    Ok(rx) => {
+                                        bot::proposal::await_approval(
+                                            rx,
+                                            approve_timeout_secs_val,
+                                        )
+                                        .await
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "failed to send Telegram proposal; \
+                                             skipping approval gate"
+                                        );
+                                        // Telegram failure: fall through to execute
+                                        // without approval so the watch loop is not
+                                        // blocked if the bot is temporarily down.
+                                        true
+                                    }
+                                }
+                            })
+                        });
+
+                        if !approved {
+                            // Log skip to DB (TG-02) and continue to next tick.
+                            if let Some(ref pg) = db_pool {
+                                let _ = tokio::task::block_in_place(|| {
+                                    tokio::runtime::Handle::current().block_on(
+                                        storage::writer::write_approval_skip(
+                                            pg,
+                                            &pool_addr_clone,
+                                            "timeout",
+                                            price_current,
+                                        ),
+                                    )
+                                });
+                            }
+                            tracing::info!(
+                                pool = %pool_addr_clone,
+                                "rebalance skipped: approval timeout/rejected"
+                            );
+                            return;
+                        }
+                        // Approved: fall through to guard.submit() and execution.
+                    }
+
                     let plan_proxy = format!(
                         "rebalance_needed tick={} range=[{},{}]",
                         pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
