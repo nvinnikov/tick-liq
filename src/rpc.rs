@@ -42,7 +42,10 @@ impl SolanaRpc {
     /// exponential backoff (250 ms → 500 ms → 1 s).
     pub fn with_timeout(url: &str, timeout_secs: u64) -> Self {
         Self {
-            client: RpcClient::new_with_timeout(url.to_string(), Duration::from_secs(timeout_secs)),
+            client: RpcClient::new_with_timeout(
+                url.to_string(),
+                Duration::from_secs(timeout_secs),
+            ),
             timeout_secs,
         }
     }
@@ -267,11 +270,7 @@ mod tests {
             Ok::<i32, anyhow::Error>(42)
         });
         assert_eq!(result.unwrap(), 42);
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "should only call once on success"
-        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "should only call once on success");
     }
 
     /// Verify that `retry` exhausts all attempts and returns the last error.

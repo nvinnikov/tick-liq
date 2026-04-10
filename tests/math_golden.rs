@@ -31,12 +31,7 @@ use std::path::PathBuf;
 use amounts::compute_token_amounts;
 use math_il::compute_il;
 
-fn compute_greeks(
-    liquidity: u128,
-    sqrt_price_q64: u128,
-    tick_lower: i32,
-    tick_upper: i32,
-) -> math_greeks::Greeks {
+fn compute_greeks(liquidity: u128, sqrt_price_q64: u128, tick_lower: i32, tick_upper: i32) -> math_greeks::Greeks {
     let price = math_sqrt_price::sqrt_q64_to_price(sqrt_price_q64);
     let price_lower = math_sqrt_price::sqrt_q64_to_price(tick_index_to_sqrt_price(tick_lower));
     let price_upper = math_sqrt_price::sqrt_q64_to_price(tick_index_to_sqrt_price(tick_upper));
@@ -92,13 +87,17 @@ fn load_fixtures() -> Fixtures {
         .join("orca_vectors.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
 }
 
 #[test]
 fn golden_amounts_vectors() {
     let fx = load_fixtures();
-    assert!(!fx.amounts_vectors.is_empty(), "no amounts vectors loaded");
+    assert!(
+        !fx.amounts_vectors.is_empty(),
+        "no amounts vectors loaded"
+    );
 
     let mut failures: Vec<String> = Vec::new();
     for v in &fx.amounts_vectors {
@@ -106,10 +105,7 @@ fn golden_amounts_vectors() {
         let got = match compute_token_amounts(v.liquidity, sqrt_price, v.tick_lower, v.tick_upper) {
             Ok(a) => a,
             Err(e) => {
-                failures.push(format!(
-                    "[{}] compute_token_amounts failed: {e}",
-                    v.description
-                ));
+                failures.push(format!("[{}] compute_token_amounts failed: {e}", v.description));
                 continue;
             }
         };

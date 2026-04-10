@@ -47,16 +47,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls"] }
 sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono"] }
 
-# Orca Whirlpool CPI — Anchor 0.29 branch (locked per CONTEXT.md D-01)
-# NOTE: uses git because the published crate has a solana-program ^3 conflict
-whirlpool-cpi = { git = "https://github.com/orca-so/whirlpool-cpi", branch = "anchor/0.29.0", features = ["cpi"] }
-anchor-lang  = "=0.29.0"
-anchor-spl   = "=0.29.0"
-
-# SPL ATA derivation (pulled transitively by anchor-spl but make explicit)
-spl-associated-token-account = "1.1"
-# SPL Token program ID constant (pulled transitively by anchor-spl 0.29 but must be explicit)
-spl-token = "3.5"
-
 [dev-dependencies]
 proptest = "1"

@@ -114,9 +114,7 @@ mod tests {
 
         // Serialize struct body (no discriminator).
         let mut body = Vec::new();
-        original
-            .serialize(&mut body)
-            .expect("serialize RaydiumPool");
+        original.serialize(&mut body).expect("serialize RaydiumPool");
 
         // Prepend an 8-byte discriminator (arbitrary bytes, not validated by parse_pool).
         let mut data = vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
@@ -160,9 +158,7 @@ mod tests {
         };
 
         let mut body = Vec::new();
-        original
-            .serialize(&mut body)
-            .expect("serialize RaydiumPosition");
+        original.serialize(&mut body).expect("serialize RaydiumPosition");
 
         let mut data = vec![0u8; 8]; // discriminator placeholder
         data.extend_from_slice(&body);

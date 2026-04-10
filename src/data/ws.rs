@@ -46,10 +46,7 @@ pub async fn watch_account(
                     // Reset so flapping connections don't saturate at 30 s.
                     backoff = RECONNECT_BASE;
                 }
-                warn!(
-                    "WS watch: session ended ({}), reconnecting in {:?}",
-                    reason, backoff
-                );
+                warn!("WS watch: session ended ({}), reconnecting in {:?}", reason, backoff);
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     _ = shutdown.recv() => {
@@ -72,10 +69,7 @@ enum SessionResult {
     ///                       stream closed, etc.).  Backoff should reset to base.
     /// `connected: false` — `connect_async` failed immediately.  Backoff should
     ///                       keep growing.
-    Reconnect {
-        reason: String,
-        connected: bool,
-    },
+    Reconnect { reason: String, connected: bool },
 }
 
 async fn run_session(
@@ -89,12 +83,7 @@ async fn run_session(
             // Successful connect resets backoff — caller resets after we return.
             pair
         }
-        Err(e) => {
-            return SessionResult::Reconnect {
-                reason: format!("connect error: {e}"),
-                connected: false,
-            }
-        }
+        Err(e) => return SessionResult::Reconnect { reason: format!("connect error: {e}"), connected: false },
     };
 
     let (mut write, mut read) = ws_stream.split();
@@ -106,10 +95,7 @@ async fn run_session(
         "params": [account, {"encoding": "base64", "commitment": "confirmed"}]
     });
     if let Err(e) = write.send(Message::Text(subscribe.to_string())).await {
-        return SessionResult::Reconnect {
-            reason: format!("subscribe send error: {e}"),
-            connected: true,
-        };
+        return SessionResult::Reconnect { reason: format!("subscribe send error: {e}"), connected: true };
     }
 
     info!("WS watch: subscribed to {}", account);
@@ -124,10 +110,7 @@ async fn run_session(
         // Check pong timeout.
         if let Some(deadline) = pong_deadline {
             if tokio::time::Instant::now() >= deadline {
-                return SessionResult::Reconnect {
-                    reason: "pong timeout".to_string(),
-                    connected: true,
-                };
+                return SessionResult::Reconnect { reason: "pong timeout".to_string(), connected: true };
             }
         }
 
@@ -260,10 +243,7 @@ mod tests {
         let mut backoff = RECONNECT_BASE;
 
         // First attempt: connect_async fails → backoff grows.
-        let result = SessionResult::Reconnect {
-            reason: "connect error: refused".into(),
-            connected: false,
-        };
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
         if let SessionResult::Reconnect { connected, .. } = result {
             if connected {
                 backoff = RECONNECT_BASE;
@@ -271,17 +251,10 @@ mod tests {
             // after sleep we would double:
             backoff = (backoff * 2).min(RECONNECT_MAX);
         }
-        assert_eq!(
-            backoff,
-            Duration::from_secs(2),
-            "backoff should double after connect fail"
-        );
+        assert_eq!(backoff, Duration::from_secs(2), "backoff should double after connect fail");
 
         // Double again (another connect fail):
-        let result = SessionResult::Reconnect {
-            reason: "connect error: refused".into(),
-            connected: false,
-        };
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
         if let SessionResult::Reconnect { connected, .. } = result {
             if connected {
                 backoff = RECONNECT_BASE;
@@ -292,10 +265,7 @@ mod tests {
 
         // Now a session that connected but then dropped → backoff resets to base
         // before sleeping, so next sleep is 1 s, then doubles to 2 s.
-        let result = SessionResult::Reconnect {
-            reason: "stream closed".into(),
-            connected: true,
-        };
+        let result = SessionResult::Reconnect { reason: "stream closed".into(), connected: true };
         if let SessionResult::Reconnect { connected, .. } = result {
             if connected {
                 backoff = RECONNECT_BASE;
@@ -303,27 +273,17 @@ mod tests {
             backoff = (backoff * 2).min(RECONNECT_MAX);
         }
         // reset to 1 s, then doubled → 2 s
-        assert_eq!(
-            backoff,
-            Duration::from_secs(2),
-            "backoff should reset and then double once"
-        );
+        assert_eq!(backoff, Duration::from_secs(2), "backoff should reset and then double once");
 
         // Saturates at RECONNECT_MAX regardless of path.
         backoff = RECONNECT_MAX;
-        let result = SessionResult::Reconnect {
-            reason: "connect error: refused".into(),
-            connected: false,
-        };
+        let result = SessionResult::Reconnect { reason: "connect error: refused".into(), connected: false };
         if let SessionResult::Reconnect { connected, .. } = result {
             if connected {
                 backoff = RECONNECT_BASE;
             }
             backoff = (backoff * 2).min(RECONNECT_MAX);
         }
-        assert_eq!(
-            backoff, RECONNECT_MAX,
-            "backoff must not exceed RECONNECT_MAX"
-        );
+        assert_eq!(backoff, RECONNECT_MAX, "backoff must not exceed RECONNECT_MAX");
     }
 }
