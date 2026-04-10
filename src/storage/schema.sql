@@ -72,3 +72,7 @@ CREATE TABLE IF NOT EXISTS risk_state (
     halt_flag             BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Telegram bot operator pause column (TG-01 / D-04): added idempotently at startup.
+-- operator_pause is independent from IL-triggered pause_flag (different lifecycle).
+ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS operator_pause BOOLEAN NOT NULL DEFAULT FALSE;
