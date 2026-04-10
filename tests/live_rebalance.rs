@@ -9,21 +9,19 @@
 //!
 //! Tests use simulateTransaction — no funds are consumed, no state is modified.
 
-use std::sync::Arc;
 use solana_sdk::pubkey::Pubkey;
+use std::sync::Arc;
 use tick_liq::execution::OrcaExecutor;
-use tick_liq::protocols::orca::{
-    tick_array_pda, tick_array_start_index, WhirlpoolPool,
-};
+use tick_liq::protocols::orca::{tick_array_pda, tick_array_start_index, WhirlpoolPool};
 
 /// Load executor from environment variables. Panics if env vars are absent.
 fn executor_from_env() -> OrcaExecutor {
-    let rpc_url = std::env::var("RPC_URL")
-        .unwrap_or_else(|_| "https://api.devnet.solana.com".to_string());
+    let rpc_url =
+        std::env::var("RPC_URL").unwrap_or_else(|_| "https://api.devnet.solana.com".to_string());
     let raw = std::env::var("WALLET_KEYPAIR")
         .expect("WALLET_KEYPAIR must be set to run live_rebalance integration tests");
-    let bytes: Vec<u8> = serde_json::from_str(&raw)
-        .expect("WALLET_KEYPAIR must be a JSON array of 64 bytes");
+    let bytes: Vec<u8> =
+        serde_json::from_str(&raw).expect("WALLET_KEYPAIR must be a JSON array of 64 bytes");
     let kp = solana_sdk::signer::keypair::Keypair::from_bytes(&bytes)
         .expect("Invalid keypair bytes in WALLET_KEYPAIR");
     OrcaExecutor::new(&rpc_url, Arc::new(kp))
@@ -68,7 +66,8 @@ fn simulate_update_fees_and_rewards_ix() {
     // Use tick_array_pda to derive valid-looking tick array addresses for the pool.
     let ta_lower = tick_array_pda(&pool, tick_array_start_index(-128, 64));
     let ta_upper = tick_array_pda(&pool, tick_array_start_index(128, 64));
-    let ix = ex.ix_update_fees_and_rewards(&pool, &pos, &ta_lower, &ta_upper)
+    let ix = ex
+        .ix_update_fees_and_rewards(&pool, &pos, &ta_lower, &ta_upper)
         .expect("ix_update_fees_and_rewards should not fail");
     // We assert the ix is well-formed; simulation error from program is acceptable.
     // But if simulate_tx panics or errors at transport level, the test fails.
@@ -86,9 +85,14 @@ fn simulate_collect_fees_ix() {
     let pool = dummy_pool();
     let position_pda_key = Pubkey::new_unique();
     let position_mint = Pubkey::new_unique();
-    let ix = ex.ix_collect_fees(&pool_addr, &pool, &position_pda_key, &position_mint)
+    let ix = ex
+        .ix_collect_fees(&pool_addr, &pool, &position_pda_key, &position_mint)
         .expect("ix_collect_fees should not fail");
-    assert_eq!(ix.accounts.len(), 9, "collect_fees must have exactly 9 accounts");
+    assert_eq!(
+        ix.accounts.len(),
+        9,
+        "collect_fees must have exactly 9 accounts"
+    );
     let _ = ex.simulate_tx(ix);
 }
 
@@ -99,9 +103,14 @@ fn simulate_close_position_ix() {
     let ex = executor_from_env();
     let position_pda_key = Pubkey::new_unique();
     let position_mint = Pubkey::new_unique();
-    let ix = ex.ix_close_position(&position_pda_key, &position_mint)
+    let ix = ex
+        .ix_close_position(&position_pda_key, &position_mint)
         .expect("ix_close_position should not fail");
-    assert_eq!(ix.accounts.len(), 6, "close_position must have exactly 6 accounts");
+    assert_eq!(
+        ix.accounts.len(),
+        6,
+        "close_position must have exactly 6 accounts"
+    );
     let _ = ex.simulate_tx(ix);
 }
 
@@ -111,14 +120,25 @@ fn simulate_close_position_ix() {
 fn simulate_open_position_ix() {
     let ex = executor_from_env();
     let pool_addr = Pubkey::new_unique();
-    let (ix, new_mint) = ex.ix_open_position(&pool_addr, -100, 100)
+    let (ix, new_mint) = ex
+        .ix_open_position(&pool_addr, -100, 100)
         .expect("ix_open_position should not fail");
-    assert_eq!(ix.accounts.len(), 10, "open_position must have exactly 10 accounts");
+    assert_eq!(
+        ix.accounts.len(),
+        10,
+        "open_position must have exactly 10 accounts"
+    );
     // Verify position_mint appears as signer in accounts
     use solana_sdk::signer::Signer;
     let new_mint_pubkey = new_mint.pubkey();
     let mint_account = ix.accounts.iter().find(|a| a.pubkey == new_mint_pubkey);
-    assert!(mint_account.is_some(), "new position_mint must appear in open_position accounts");
-    assert!(mint_account.unwrap().is_signer, "new position_mint must be a signer");
+    assert!(
+        mint_account.is_some(),
+        "new position_mint must appear in open_position accounts"
+    );
+    assert!(
+        mint_account.unwrap().is_signer,
+        "new position_mint must be a signer"
+    );
     let _ = ex.simulate_tx(ix);
 }

@@ -10,9 +10,9 @@ use tick_liq::strategy::slippage::{check_slippage, SlippageConfig, SlippageResul
 fn test_small_trade_large_pool_passes_default_threshold() {
     let config = SlippageConfig::default(); // 50 bps
     let result = check_slippage(
-        25_000.0,            // $25k position value
-        150.0,               // current price
-        1_000_000_000_000,   // 1T liquidity — realistic for major Orca pools
+        25_000.0,          // $25k position value
+        150.0,             // current price
+        1_000_000_000_000, // 1T liquidity — realistic for major Orca pools
         &config,
     );
     match result {
@@ -23,9 +23,7 @@ fn test_small_trade_large_pool_passes_default_threshold() {
             );
         }
         SlippageResult::Abort { impact_bps, .. } => {
-            panic!(
-                "expected Ok for small trade vs large pool, got Abort with {impact_bps} bps"
-            );
+            panic!("expected Ok for small trade vs large pool, got Abort with {impact_bps} bps");
         }
     }
 }
@@ -41,17 +39,21 @@ fn test_large_trade_tiny_pool_exceeds_threshold() {
         &config,
     );
     match result {
-        SlippageResult::Abort { impact_bps, threshold_bps } => {
+        SlippageResult::Abort {
+            impact_bps,
+            threshold_bps,
+        } => {
             assert!(
                 impact_bps > 50.0,
                 "expected impact > 50 bps for large trade vs tiny pool, got {impact_bps}"
             );
-            assert_eq!(threshold_bps, 50, "threshold should match config default of 50");
+            assert_eq!(
+                threshold_bps, 50,
+                "threshold should match config default of 50"
+            );
         }
         SlippageResult::Ok { impact_bps } => {
-            panic!(
-                "expected Abort for large trade vs tiny pool, got Ok with {impact_bps} bps"
-            );
+            panic!("expected Abort for large trade vs tiny pool, got Ok with {impact_bps} bps");
         }
     }
 }
@@ -94,8 +96,7 @@ fn test_zero_liquidity_always_aborts() {
     let config = SlippageConfig::default();
     let result = check_slippage(
         1_000.0, // any non-zero trade
-        100.0,
-        0, // zero liquidity
+        100.0, 0, // zero liquidity
         &config,
     );
     match result {
@@ -116,7 +117,7 @@ fn test_zero_liquidity_always_aborts() {
 fn test_zero_trade_size_always_passes() {
     let config = SlippageConfig::default();
     let result = check_slippage(
-        0.0,               // zero trade size
+        0.0, // zero trade size
         100.0,
         1_000_000_000_000, // any non-zero liquidity
         &config,

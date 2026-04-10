@@ -141,8 +141,7 @@ mod tests {
     fn test_amounts_non_negative() {
         // Invariant: amounts are always >= 0 across the full tick range.
         for tick in [-100, 0, 100, 150, 200, 300] {
-            let amounts =
-                compute_token_amounts(1_000_000, sqrt_price_x64_at_tick(tick), 100, 200);
+            let amounts = compute_token_amounts(1_000_000, sqrt_price_x64_at_tick(tick), 100, 200);
             assert!(
                 amounts.amount_a >= 0.0,
                 "amount_a negative at tick {tick}: {}",

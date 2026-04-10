@@ -2,7 +2,6 @@
 // Suppress dead-code lint on the entire module until wired up.
 #![allow(dead_code)]
 
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -12,6 +11,7 @@ use solana_sdk::{
     signer::Signer,
     transaction::Transaction,
 };
+use std::sync::Arc;
 
 use crate::protocols::orca::{
     position_pda, whirlpool_program_pubkey, WhirlpoolPool, WhirlpoolPosition,
@@ -64,7 +64,11 @@ impl OrcaExecutor {
             AccountMeta::new_readonly(*tick_array_lower, false),
             AccountMeta::new_readonly(*tick_array_upper, false),
         ];
-        Ok(Instruction { program_id: self.program_id, accounts, data })
+        Ok(Instruction {
+            program_id: self.program_id,
+            accounts,
+            data,
+        })
     }
 
     /// Step 2: collect_fees
@@ -98,7 +102,11 @@ impl OrcaExecutor {
             AccountMeta::new(pool.token_vault_b, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ];
-        Ok(Instruction { program_id: self.program_id, accounts, data })
+        Ok(Instruction {
+            program_id: self.program_id,
+            accounts,
+            data,
+        })
     }
 
     /// Step 3: close_position
@@ -122,7 +130,11 @@ impl OrcaExecutor {
             AccountMeta::new(position_ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ];
-        Ok(Instruction { program_id: self.program_id, accounts, data })
+        Ok(Instruction {
+            program_id: self.program_id,
+            accounts,
+            data,
+        })
     }
 
     /// Step 4: open_position
@@ -146,10 +158,8 @@ impl OrcaExecutor {
         let wallet = self.keypair.pubkey();
         let new_mint = Keypair::new();
         let new_position_pda = position_pda(&new_mint.pubkey());
-        let new_position_ata = spl_associated_token_account::get_associated_token_address(
-            &wallet,
-            &new_mint.pubkey(),
-        );
+        let new_position_ata =
+            spl_associated_token_account::get_associated_token_address(&wallet, &new_mint.pubkey());
         let data = whirlpool_cpi::instruction::OpenPosition {
             bumps: whirlpool_cpi::state::OpenPositionBumps { position_bump: 0 },
             tick_lower_index,
@@ -157,18 +167,25 @@ impl OrcaExecutor {
         }
         .data();
         let accounts = vec![
-            AccountMeta::new(wallet, true),                                           // funder
-            AccountMeta::new_readonly(wallet, false),                                 // owner
-            AccountMeta::new(new_position_pda, false),                                // position
-            AccountMeta::new(new_mint.pubkey(), true),                                // position_mint
-            AccountMeta::new(new_position_ata, false),                                // position_token_account
-            AccountMeta::new_readonly(*pool_address, false),                          // whirlpool
-            AccountMeta::new_readonly(spl_token::ID, false),                         // token_program
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),        // system_program
-            AccountMeta::new_readonly(solana_sdk::sysvar::rent::ID, false),          // rent
-            AccountMeta::new_readonly(spl_associated_token_account::ID, false),      // associated_token_program
+            AccountMeta::new(wallet, true),                  // funder
+            AccountMeta::new_readonly(wallet, false),        // owner
+            AccountMeta::new(new_position_pda, false),       // position
+            AccountMeta::new(new_mint.pubkey(), true),       // position_mint
+            AccountMeta::new(new_position_ata, false),       // position_token_account
+            AccountMeta::new_readonly(*pool_address, false), // whirlpool
+            AccountMeta::new_readonly(spl_token::ID, false), // token_program
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false), // system_program
+            AccountMeta::new_readonly(solana_sdk::sysvar::rent::ID, false), // rent
+            AccountMeta::new_readonly(spl_associated_token_account::ID, false), // associated_token_program
         ];
-        Ok((Instruction { program_id: self.program_id, accounts, data }, new_mint))
+        Ok((
+            Instruction {
+                program_id: self.program_id,
+                accounts,
+                data,
+            },
+            new_mint,
+        ))
     }
 
     /// Execute update_fees_and_rewards instruction (calls submit_tx internally).
