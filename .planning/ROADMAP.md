@@ -85,16 +85,14 @@ Plans:
 **Requirements**: LIVE-01, LIVE-02, LIVE-03, LIVE-04
 **Success Criteria** (what must be TRUE):
   1. With `--live` and shadow gate satisfied, a triggered rebalance executes close → collect fees → open via Anchor CPI to Orca
-  2. Drift perp hedge size is updated in the same rebalance cycle to match position delta
+  2. Drift perp hedge size is computed and logged each cycle (full Drift CPI deferred — LIVE-02 deferred)
   3. Process exits with a clear error at startup if `WALLET_KEYPAIR` env var is absent
-  4. If Drift hedge update fails, the LP rebalance is rolled back (and vice versa); partial state is not left on-chain
-**Plans**: 4 plans
+  4. LIVE-04 atomicity (LP↔Drift rollback) deferred with LIVE-02
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: Implement `execution::orca_rebalance` — close, collect, open CPI sequence via anchor-client; devnet integration test
-- [ ] 05-02: Implement `execution::drift_hedge` — compute delta from current position, submit perp size update to Drift Protocol
-- [ ] 05-03: Implement atomicity wrapper: if either leg fails, emit rollback instruction (or close the orphaned leg); log outcome
-- [ ] 05-04: Keypair loader with env-var-only enforcement; startup validation; end-to-end smoke test on devnet
+- [ ] 05-01-PLAN.md — Add whirlpool-cpi deps + implement OrcaExecutor with 4-step instruction builders and unit tests
+- [ ] 05-02-PLAN.md — Wire keypair loader + OrcaExecutor into watch loop; simulateTransaction integration tests
 
 ### Phase 6: Risk Limits
 **Goal**: The running system enforces configurable hard limits on drawdown, instantaneous IL, and Drift margin ratio, taking the correct per-limit action automatically and surviving process restarts.
@@ -141,6 +139,6 @@ Plans:
 | 2. Shadow Mode | 0/4 | Not started | - |
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
-| 5. Live Execution | 0/4 | Not started | - |
+| 5. Live Execution | 0/2 | Not started | - |
 | 6. Risk Limits | 0/4 | Not started | - |
 | 7. Telegram Bot | 0/4 | Not started | - |
