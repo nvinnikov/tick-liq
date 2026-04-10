@@ -104,9 +104,11 @@ impl RiskMonitor {
         // Attempt to fetch an existing row.
         let row_opt = pool
             .fetch_optional(
-                query("SELECT peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at \
-                       FROM risk_state WHERE pool_address = $1")
-                    .bind(pool_address),
+                query(
+                    "SELECT peak_pnl, current_drawdown_pct, pause_flag, halt_flag, updated_at \
+                       FROM risk_state WHERE pool_address = $1",
+                )
+                .bind(pool_address),
             )
             .await
             .map_err(|e| anyhow::anyhow!("load_or_init SELECT failed: {}", e))?;
@@ -204,8 +206,7 @@ impl RiskMonitor {
     pub fn derive_drift_user_pda(
         authority: &solana_sdk::pubkey::Pubkey,
     ) -> solana_sdk::pubkey::Pubkey {
-        let drift_program_id =
-            solana_sdk::pubkey!("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
+        let drift_program_id = solana_sdk::pubkey!("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
         let (pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
             &[b"user", authority.as_ref(), &0u16.to_le_bytes()],
             &drift_program_id,
@@ -315,10 +316,14 @@ impl RiskMonitor {
 
                 if quote_start + 8 <= payload.len() {
                     let base = i64::from_le_bytes(
-                        payload[base_start..base_start + 8].try_into().unwrap_or([0u8; 8]),
+                        payload[base_start..base_start + 8]
+                            .try_into()
+                            .unwrap_or([0u8; 8]),
                     );
                     let quote = i64::from_le_bytes(
-                        payload[quote_start..quote_start + 8].try_into().unwrap_or([0u8; 8]),
+                        payload[quote_start..quote_start + 8]
+                            .try_into()
+                            .unwrap_or([0u8; 8]),
                     );
                     total_base_abs = total_base_abs.saturating_add(base.abs());
                     total_quote_abs = total_quote_abs.saturating_add(quote.abs());
@@ -699,8 +704,8 @@ mod tests {
             state,
             None,
             None,
-            None,                          // limit not configured
-            Some(Pubkey::new_unique()),    // pubkey present but limit absent
+            None,                       // limit not configured
+            Some(Pubkey::new_unique()), // pubkey present but limit absent
             "https://api.mainnet-beta.solana.com".to_string(),
         );
         assert_eq!(
