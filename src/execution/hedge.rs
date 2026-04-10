@@ -30,6 +30,17 @@ pub fn compute_hedge_size(delta: f64, price: f64) -> HedgePlan {
     }
 }
 
+/// Log the computed Drift hedge size without submitting any instruction.
+/// Called in Phase 5 live mode. Full Drift CPI is deferred to a later phase (LIVE-02).
+pub fn log_hedge_stub(plan: &HedgePlan) {
+    tracing::info!(
+        size_usd = plan.perp_size_usd,
+        side = plan.perp_side,
+        delta = plan.delta,
+        "drift hedge size computed (not submitted — LIVE-02 deferred)"
+    );
+}
+
 /// Print the plan in the F14 format.
 pub fn print_hedge_dry_run(plan: &HedgePlan) {
     let offset_note = if plan.delta < 0.0 {

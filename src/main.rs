@@ -204,6 +204,23 @@ enum DbAction {
     Migrate,
 }
 
+/// Load the wallet keypair from the WALLET_KEYPAIR environment variable.
+/// The variable must contain a JSON array of 64 bytes (standard Solana CLI format).
+/// Returns Err with a clear message if the var is absent or malformed.
+/// Called at startup when --live is active; caller must call std::process::exit(1) on Err.
+fn load_wallet_keypair() -> anyhow::Result<solana_sdk::signer::keypair::Keypair> {
+    use anyhow::Context;
+    let raw = std::env::var("WALLET_KEYPAIR")
+        .map_err(|_| anyhow::anyhow!(
+            "WALLET_KEYPAIR env var not set — required for --live mode.\n\
+             Export as a JSON byte array: export WALLET_KEYPAIR='[1,2,3,...,64]'"
+        ))?;
+    let bytes: Vec<u8> = serde_json::from_str(&raw)
+        .context("WALLET_KEYPAIR must be a JSON array of 64 bytes, e.g. [1,2,...,64]")?;
+    solana_sdk::signer::keypair::Keypair::from_bytes(&bytes)
+        .map_err(|e| anyhow::anyhow!("WALLET_KEYPAIR contains invalid keypair bytes: {}", e))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -456,6 +473,21 @@ async fn main() -> Result<()> {
                 RunMode::Shadow => execution::ShadowGuard::shadow(),
                 RunMode::Live => execution::ShadowGuard::live(),
             };
+
+            // LIVE-03: Load wallet keypair at startup. Exit immediately if absent or invalid.
+            let wallet_keypair: Option<std::sync::Arc<solana_sdk::signer::keypair::Keypair>> =
+                if run_mode == RunMode::Live {
+                    match load_wallet_keypair() {
+                        Ok(kp) => Some(std::sync::Arc::new(kp)),
+                        Err(e) => {
+                            tracing::error!(error = %e, "startup: WALLET_KEYPAIR invalid — cannot start live mode");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    None
+                };
+
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -528,8 +560,10 @@ async fn main() -> Result<()> {
             let max_slippage_bps_val: u32 = *max_slippage_bps;
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
+            let rpc_url_clone = rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
             let mint_str = mint.clone();
+            let wallet_keypair_clone = wallet_keypair.clone();
             let on_notify = Box::new(move |json: serde_json::Value| {
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
                 print!("\x1B[2J\x1B[1;1H");
@@ -693,16 +727,144 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Gate: if a rebalance plan were to be submitted, check shadow guard first.
-                // In Phase 2 there is no real plan — we use the pool state as the proxy.
-                // Real rebalance plan construction arrives in Phase 5.
+                // Gate: dispatch rebalance based on run mode.
+                // Shadow mode: log the decision. Live mode: execute 4-step OrcaExecutor sequence.
                 if slippage_passed {
-                    let plan_proxy = format!(
-                        "rebalance_needed tick={} range=[{},{}]",
-                        pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
-                    );
-                    if let Err(e) = guard.submit(&plan_proxy) {
-                        tracing::warn!(error = %e, "rebalance submission gated");
+                    match guard {
+                        execution::ShadowGuard::Shadow => {
+                            // Shadow mode: log decision, do not submit any transaction.
+                            tracing::info!(
+                                tick = pool.tick_current_index,
+                                tick_lower = pos.tick_lower_index,
+                                tick_upper = pos.tick_upper_index,
+                                "ShadowGuard: rebalance decision logged (shadow mode — no tx)"
+                            );
+                        }
+                        execution::ShadowGuard::Live => {
+                            // LIVE-01: Execute 4-step Orca rebalance sequence.
+                            // Drift stub: compute hedge size and log it (LIVE-02 deferred).
+                            let sqrt_price_f64 = pool.sqrt_price as f64 / (1u128 << 64) as f64;
+                            let lp_delta = -(pos.liquidity as f64) / (2.0 * sqrt_price_f64 * price_current);
+                            let hedge = execution::compute_hedge_size(lp_delta, price_current);
+                            execution::log_hedge_stub(&hedge);
+
+                            // Build rebalance plan for new range.
+                            let plan = execution::build_rebalance_plan(
+                                &mint_str,
+                                pos.tick_lower_index,
+                                pos.tick_upper_index,
+                                pool.tick_spacing as i32,
+                            );
+
+                            if let Some(ref kp) = wallet_keypair_clone {
+                                let executor = execution::OrcaExecutor::new(
+                                    &rpc_url_clone,
+                                    kp.clone(),
+                                );
+                                let pool_pubkey = Pubkey::from_str(&pool_addr_clone)
+                                    .expect("pool address was already parsed at watch startup");
+                                let position_mint_pubkey = Pubkey::from_str(&mint_str)
+                                    .expect("position mint was already parsed at watch startup");
+                                let position_pda_key = protocols::orca::position_pda(&position_mint_pubkey);
+                                let tick_lower_start = protocols::orca::tick_array_start_index(
+                                    pos.tick_lower_index, pool.tick_spacing,
+                                );
+                                let tick_upper_start = protocols::orca::tick_array_start_index(
+                                    pos.tick_upper_index, pool.tick_spacing,
+                                );
+                                let ta_lower = protocols::orca::tick_array_pda(&pool_pubkey, tick_lower_start);
+                                let ta_upper = protocols::orca::tick_array_pda(&pool_pubkey, tick_upper_start);
+
+                                // Step 1: update_fees_and_rewards
+                                let step1_result = executor
+                                    .ix_update_fees_and_rewards(
+                                        &pool_pubkey, &position_pda_key, &ta_lower, &ta_upper,
+                                    )
+                                    .and_then(|ix| executor.execute_update_fees_and_rewards(ix));
+
+                                // Step 2: collect_fees (only if step 1 succeeded)
+                                let step2_result = step1_result.and_then(|_| {
+                                    executor
+                                        .ix_collect_fees(&pool_pubkey, &pool, &position_pda_key, &position_mint_pubkey)
+                                        .and_then(|ix| executor.execute_collect_fees(ix))
+                                });
+
+                                // Step 3: close_position (only if step 2 succeeded)
+                                let step3_result = step2_result.and_then(|_| {
+                                    executor
+                                        .ix_close_position(&position_pda_key, &position_mint_pubkey)
+                                        .and_then(|ix| executor.execute_close_position(ix))
+                                });
+
+                                // Step 4: open_position with retry (LIVE-01 retry spec)
+                                let open_result: anyhow::Result<()> = step3_result.and_then(|_| {
+                                    match executor.ix_open_position(&pool_pubkey, plan.new_tick_lower, plan.new_tick_upper) {
+                                        Err(e) => Err(e),
+                                        Ok((ix, new_mint_kp)) => {
+                                            match executor.execute_open_position(ix, &new_mint_kp) {
+                                                Ok(sig) => {
+                                                    tracing::info!(
+                                                        signature = %sig,
+                                                        new_tick_lower = plan.new_tick_lower,
+                                                        new_tick_upper = plan.new_tick_upper,
+                                                        "live rebalance: open_position succeeded"
+                                                    );
+                                                    Ok(())
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "open_position failed — retrying once after 2s (LIVE-01)"
+                                                    );
+                                                    std::thread::sleep(std::time::Duration::from_secs(2));
+                                                    // Rebuild ix since it consumed the keypair
+                                                    executor
+                                                        .ix_open_position(&pool_pubkey, plan.new_tick_lower, plan.new_tick_upper)
+                                                        .and_then(|(ix2, new_mint_kp2)| {
+                                                            executor.execute_open_position(ix2, &new_mint_kp2)
+                                                                .map(|sig| {
+                                                                    tracing::info!(
+                                                                        signature = %sig,
+                                                                        "live rebalance: open_position retry succeeded"
+                                                                    );
+                                                                })
+                                                        })
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+
+                                // Failure path: emit CRITICAL log + persist error row
+                                if let Err(ref e) = open_result {
+                                    tracing::error!(
+                                        error = %e,
+                                        pool = %pool_addr_clone,
+                                        "CRITICAL: live rebalance failed — operator intervention required; position may be partially closed"
+                                    );
+                                    if let Some(ref pg) = db_pool {
+                                        let failure_row = storage::writer::ShadowRebalanceRow {
+                                            pool_address: pool_addr_clone.clone(),
+                                            trigger_reason: "live_rebalance_failed".to_string(),
+                                            price: price_current,
+                                            simulated_range_width: Some(
+                                                (plan.new_tick_upper - plan.new_tick_lower) as f64,
+                                            ),
+                                            simulated_fees_earned: Some(computed_fees_earned),
+                                            simulated_il_usd: Some(computed_il_usd),
+                                            simulated_net_pnl: Some(
+                                                computed_fees_earned - computed_il_usd.abs(),
+                                            ),
+                                            error_flag: true,
+                                            error_message: Some(format!("{:#}", e)),
+                                        };
+                                        storage::writer::spawn_shadow_write(pg.clone(), failure_row);
+                                    }
+                                }
+                            } else {
+                                tracing::error!("live mode active but wallet_keypair is None — this is a bug");
+                            }
+                        }
                     }
                 }
 
