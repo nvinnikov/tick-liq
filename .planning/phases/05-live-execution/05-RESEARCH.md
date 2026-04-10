@@ -530,21 +530,24 @@ storage::writer::spawn_shadow_write(pg.clone(), fail_row);
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does decrease_liquidity need to be in scope for Phase 5?**
    - What we know: `close_position` requires zero liquidity; the existing system accumulates liquidity in positions
    - What's unclear: Is the assumption that Phase 5 only fires on positions that have already been manually drained, or does Phase 5 need to call `decrease_liquidity` itself?
    - Recommendation: Planner should add a pre-flight check (`pos.liquidity == 0`) and halt with CRITICAL log if non-zero. Document that `decrease_liquidity` is a future task. A5 assumption in the assumptions log.
+   - RESOLVED: Plans add a pre-flight `pos.liquidity == 0` check. If non-zero, halt with CRITICAL log and write error row. `decrease_liquidity` is explicitly deferred to a future phase.
 
 2. **Does `whirlpool-cpi` export instruction structs for off-chain use?**
    - What we know: The crate targets on-chain CPI but exports Anchor instruction types that include discriminators + account meta builders
    - What's unclear: Whether `anchor_lang::ToAccountMetas` works from a non-`#[program]` binary
    - Recommendation: After adding the dep, confirm with a `cargo check`. If the trait isn't available off-chain, fall back to hand-building `AccountMeta` vecs from the known account layouts (fully documented above).
+   - RESOLVED: Plans instruct executor to build `Vec<AccountMeta>` directly (not relying on `ToAccountMetas` trait). This is the safe off-chain approach that avoids on-chain-only trait availability issues.
 
 3. **Is `OrcaExecutor` struct vs. free functions the right pattern?**
    - What we know: CONTEXT.md leaves this to Claude's discretion
    - Recommendation: Use an `OrcaExecutor { rpc_url: String, wallet: Arc<Keypair> }` struct — it encapsulates the connection and signing key, and its methods map 1:1 to the 4 instructions; testable by mocking the RPC URL in `#[ignore]` tests.
+   - RESOLVED: Plans adopt `OrcaExecutor` struct pattern with `rpc_client` and `wallet` fields. Private `submit_tx()` helper in 05-01; public `execute_*` wrappers added in 05-02.
 
 ---
 
