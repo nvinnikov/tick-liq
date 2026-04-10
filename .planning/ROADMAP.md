@@ -103,13 +103,12 @@ Plans:
   2. When instantaneous IL exceeds `--max-il`, rebalancing is paused but the position stays open; it resumes when IL drops
   3. When Drift margin ratio falls below `--drift-min-margin-ratio`, the Drift hedge is closed while LP remains open
   4. Risk state (peak_value, current_drawdown) is persisted to DB; limits are re-evaluated correctly after process restart
-**Plans**: 4 plans
+**Plans**: 3 plans
 
 Plans:
-- [ ] 06-01: Implement `strategy::risk_monitor` — evaluate drawdown, IL, and margin-ratio thresholds on each tick
-- [ ] 06-02: Implement per-limit action handlers: `close_all`, `pause_rebalancing`, `close_drift_only`
-- [ ] 06-03: Persist risk state (peak_value, drawdown, pause flags) to DB; load on startup; verify continuity across restart
-- [ ] 06-04: CLI flag parsing for all three thresholds; unit tests covering each limit action and DB round-trip
+- [ ] 06-01-PLAN.md — RiskMonitor core module: RiskState, RiskAction enum, evaluate() with drawdown/IL/margin checks + unit tests
+- [ ] 06-02-PLAN.md — DB persistence (risk_state table, load_or_init, persist_state) + Drift User account RPC fetch
+- [ ] 06-03-PLAN.md — CLI flags + watch loop wiring: init, evaluate per tick, per-limit actions, state persistence
 
 ### Phase 7: Telegram Bot
 **Goal**: Operator receives rebalance proposals via Telegram, can approve or let them time out, and can query status, pause, or pull a 24h P&L report at any time.
@@ -140,5 +139,5 @@ Plans:
 | 3. Real-Data Backtest | 0/3 | Not started | - |
 | 4. Slippage Guard | 0/3 | Not started | - |
 | 5. Live Execution | 0/2 | Not started | - |
-| 6. Risk Limits | 0/4 | Not started | - |
+| 6. Risk Limits | 0/3 | Not started | - |
 | 7. Telegram Bot | 0/4 | Not started | - |
