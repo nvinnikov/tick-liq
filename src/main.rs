@@ -69,6 +69,18 @@ enum Commands {
         /// Run in live mode: submit real transactions (requires shadow gate passed)
         #[arg(long, conflicts_with = "shadow")]
         live: bool,
+        /// Maximum cumulative P&L drawdown as percentage (e.g. 10.0 = 10%).
+        /// When exceeded, LP position is closed and rebalancing halts permanently.
+        #[arg(long)]
+        max_drawdown: Option<f64>,
+        /// Maximum instantaneous IL as percentage of position value (e.g. 5.0 = 5%).
+        /// When exceeded, rebalancing is paused until IL recovers.
+        #[arg(long)]
+        max_il: Option<f64>,
+        /// Minimum Drift margin ratio as percentage (e.g. 20.0 = 20%).
+        /// When below this, Drift hedge close is logged (CPI deferred to LIVE-02).
+        #[arg(long)]
+        drift_min_margin_ratio: Option<f64>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -439,7 +451,35 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("Unknown protocol '{}'. Use 'orca' or 'raydium'.", other),
             }
         }
-        Commands::Watch { mint, shadow: _, live } => {
+        Commands::Watch {
+            mint,
+            shadow: _,
+            live,
+            max_drawdown,
+            max_il,
+            drift_min_margin_ratio,
+        } => {
+            // Validate risk limit flags
+            if let Some(dd) = max_drawdown {
+                if *dd <= 0.0 || *dd > 100.0 {
+                    anyhow::bail!("--max-drawdown must be between 0 and 100 (got {})", dd);
+                }
+            }
+            if let Some(il) = max_il {
+                if *il <= 0.0 || *il > 100.0 {
+                    anyhow::bail!("--max-il must be between 0 and 100 (got {})", il);
+                }
+            }
+            if let Some(mr) = drift_min_margin_ratio {
+                if *mr <= 0.0 {
+                    anyhow::bail!("--drift-min-margin-ratio must be positive (got {})", mr);
+                }
+            }
+
+            let max_drawdown_val: Option<f64> = *max_drawdown;
+            let max_il_val: Option<f64> = *max_il;
+            let drift_min_margin_ratio_val: Option<f64> = *drift_min_margin_ratio;
+
             let run_mode = if *live { RunMode::Live } else { RunMode::Shadow };
             tracing::info!(mode = ?run_mode, "watch starting");
             let guard = match run_mode {
