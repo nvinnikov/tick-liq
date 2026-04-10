@@ -159,7 +159,8 @@ pub fn parse_position(data: &[u8]) -> Result<WhirlpoolPosition> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
-    WhirlpoolPosition::try_from_slice(&data[DISC..])
+    let mut cursor = &data[DISC..];
+    WhirlpoolPosition::deserialize(&mut cursor)
         .map_err(|e| anyhow!("Failed to deserialize Whirlpool position: {}", e))
 }
 
