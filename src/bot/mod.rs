@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod proposal;
+pub mod queries;
 
 use anyhow::Result;
 use sqlx_postgres::PgPool;
