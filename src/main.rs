@@ -590,14 +590,15 @@ async fn main() -> Result<()> {
                 std::sync::Arc<std::sync::Mutex<strategy::risk_monitor::RiskMonitor>>,
             > = match &db_pool {
                 Some(pg) => {
-                    let risk_state =
+                    let mut risk_state =
                         strategy::risk_monitor::RiskMonitor::load_or_init(pg, &pool_addr).await?;
 
-                    // Log startup halt/pause state (D-12)
+                    // Log startup halt/pause state before reset so the operator
+                    // knows stale flags were detected and are now being cleared (D-12).
                     if risk_state.halt_flag {
-                        tracing::error!(
+                        tracing::warn!(
                             pool = %pool_addr,
-                            "risk: halt_flag active from previous session -- rebalancing halted until DB is manually cleared"
+                            "risk: halt_flag was active from previous session -- clearing for new session"
                         );
                     }
                     if risk_state.pause_flag {
@@ -612,6 +613,18 @@ async fn main() -> Result<()> {
                             "risk: operator_pause active from previous session -- rebalancing paused by operator"
                         );
                     }
+
+                    // Reset session-volatile fields so stale peak_pnl / halt_flag from
+                    // a prior session do not produce an instant 100% drawdown halt on
+                    // restart. operator_pause is intentionally preserved.
+                    strategy::risk_monitor::RiskMonitor::reset_session(pg, &pool_addr).await?;
+                    risk_state.peak_pnl = 0.0;
+                    risk_state.halt_flag = false;
+                    risk_state.current_drawdown_pct = 0.0;
+                    tracing::info!(
+                        pool = %pool_addr,
+                        "risk: session reset -- peak_pnl and halt_flag cleared for new session"
+                    );
 
                     // Derive Drift User PDA from keypair if available (for RISK-03).
                     // In shadow mode (no keypair), drift_user_pubkey = None -> Drift check skipped.

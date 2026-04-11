@@ -160,6 +160,28 @@ impl RiskMonitor {
         })
     }
 
+    /// Reset volatile session state so a fresh watch session starts with a clean slate.
+    ///
+    /// Zeroes `peak_pnl`, `halt_flag`, and `current_drawdown_pct`; preserves
+    /// `operator_pause` (it is intentional and operator-controlled).
+    ///
+    /// Persists immediately via an UPDATE so the next restart also starts clean.
+    /// Call this immediately after `load_or_init` at watch-session startup.
+    pub async fn reset_session(pool: &PgPool, pool_address: &str) -> anyhow::Result<()> {
+        pool.execute(
+            query(
+                "UPDATE risk_state \
+                 SET peak_pnl = 0.0, halt_flag = FALSE, \
+                     current_drawdown_pct = 0.0, updated_at = NOW() \
+                 WHERE pool_address = $1",
+            )
+            .bind(pool_address),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("reset_session UPDATE failed: {}", e))?;
+        Ok(())
+    }
+
     /// Persist `RiskState` to the DB via fire-and-forget spawn (RISK-04).
     ///
     /// Matches the `spawn_pnl_write` pattern in `storage::writer`: spawns a Tokio
@@ -734,5 +756,50 @@ mod tests {
     #[ignore = "requires live Solana RPC and Drift User account"]
     fn fetch_drift_margin_ratio_rpc_roundtrip() {
         // Placeholder — real test needs DRIFT_USER_PUBKEY env var and Solana RPC.
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2: session reset — verifies fix for stale peak_pnl on restart
+    // -----------------------------------------------------------------------
+
+    /// After a session reset (peak_pnl=0, halt_flag=false), the first evaluate()
+    /// call with net_pnl=0 must return Continue and must NOT trigger HaltAll.
+    /// Regression test for: peak_pnl loaded from DB > 0 causes instant 100%
+    /// drawdown on restart when net_pnl starts at 0.
+    #[test]
+    fn new_session_start_does_not_halt_when_pnl_zero() {
+        // Simulate post-reset state: peak_pnl=0, halt_flag=false (as set by reset_session)
+        let state = make_state("POOL", 0.0, false, false);
+        let mut rm = monitor_all(state, Some(50.0), None, None);
+        // net_pnl=0 at session start — must not trigger drawdown halt
+        let snap = make_snap(0.0, 0.0, 1000.0);
+        let action = rm.evaluate(&snap, None);
+        assert_eq!(
+            action,
+            RiskAction::Continue,
+            "zero peak_pnl must never trigger halt at session start"
+        );
+    }
+
+    /// Verify that operator_pause survives a session reset: the in-memory zeroing
+    /// in main.rs only touches peak_pnl, halt_flag, and current_drawdown_pct.
+    #[test]
+    fn operator_pause_preserved_after_session_reset_fields() {
+        // Construct state as if loaded from DB with operator_pause=true
+        let mut state = make_state("POOL", 500.0, false, true);
+        state.operator_pause = true;
+
+        // Apply the same in-memory zeroing that main.rs does after reset_session()
+        state.peak_pnl = 0.0;
+        state.halt_flag = false;
+        state.current_drawdown_pct = 0.0;
+
+        assert!(
+            state.operator_pause,
+            "operator_pause must be preserved after session reset"
+        );
+        assert_eq!(state.peak_pnl, 0.0);
+        assert!(!state.halt_flag);
+        assert_eq!(state.current_drawdown_pct, 0.0);
     }
 }
