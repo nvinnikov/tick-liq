@@ -513,6 +513,33 @@ async fn main() -> Result<()> {
             let pos = protocols::orca::parse_position(&position_data)?;
             let pool_addr = pos.whirlpool.to_string();
 
+            // ── Bug 2 fix: record fee_growth_global baselines at watch start ──
+            // compute_accrued_fees needs (global_now - global_at_watch_start) not
+            // (global_now - fee_growth_inside_at_open) which would be a protocol
+            // mismatch producing wrong/zero results.
+            let init_pool_data =
+                rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
+            let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
+            let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
+            let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
+
+            // ── Bug 3 fix: persist entry price on first observation ────────────
+            // cache::load_entry_price returns None on first run because nothing
+            // wrote the cache yet, causing IL to fall back to current price → IL=0.
+            // Write it now (at watch start) so every subsequent tick can load it.
+            let entry_price_at_start = analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price)
+                * 10f64.powi(9 - 6);
+            if cache::load_entry_price(mint).is_none() {
+                if let Err(e) = cache::save_entry_price(mint, entry_price_at_start) {
+                    tracing::warn!(error = %e, "failed to persist entry price to cache");
+                } else {
+                    tracing::info!(
+                        entry_price = entry_price_at_start,
+                        "entry price saved to cache at watch start"
+                    );
+                }
+            }
+
             let ws_url = cli
                 .rpc_url
                 .replace("https://", "wss://")
@@ -733,22 +760,28 @@ async fn main() -> Result<()> {
                 let scale_a = 10f64.powi(9); // SOL decimals
                 let scale_b = 10f64.powi(6); // USDC decimals
 
+                // Bug 2 fix: use fee_growth_baseline_a/b (captured at watch start) as
+                // the checkpoint instead of pos.fee_growth_checkpoint_a/b.
+                // pos.fee_growth_checkpoint_* tracks fee_growth_inside (protocol value
+                // updated on every pool interaction), not fee_growth_global — using it
+                // directly produces a protocol mismatch that yields 0 or garbage fees.
+                // The baselines give us exactly "fees earned since watch session started".
                 let accrued_a = analytics::pnl::compute_accrued_fees(
                     pool.fee_growth_global_a,
-                    pos.fee_growth_checkpoint_a,
+                    fee_growth_baseline_a,
                     pos.liquidity,
                 );
                 let accrued_b = analytics::pnl::compute_accrued_fees(
                     pool.fee_growth_global_b,
-                    pos.fee_growth_checkpoint_b,
+                    fee_growth_baseline_b,
                     pos.liquidity,
                 );
                 let computed_fees_earned = (pos.fee_owed_a + accrued_a) as f64 / scale_a
                     * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                // Use cached entry price when available; fall back to current price
-                // which yields IL = 0 (conservative — avoids spurious error rows).
+                // Bug 3 fix: entry price is now guaranteed to be in cache (written at
+                // watch start above). unwrap_or fallback kept as safety net only.
                 let entry_price = cache::load_entry_price(&mint_str).unwrap_or(price_current);
 
                 let amounts_result = analytics::amounts::compute_token_amounts(
