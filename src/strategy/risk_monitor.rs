@@ -397,7 +397,8 @@ impl RiskMonitor {
 
         // --- 3. Drawdown check (skip when no peak established) ---
         if let Some(max_dd) = self.max_drawdown_pct {
-            if self.state.peak_pnl > 0.0 {
+            const MIN_PEAK_USD: f64 = 1.0;
+            if self.state.peak_pnl >= MIN_PEAK_USD {
                 let drawdown_pct =
                     (self.state.peak_pnl - snap.net_pnl) / self.state.peak_pnl * 100.0;
                 self.state.current_drawdown_pct = drawdown_pct;
@@ -535,13 +536,23 @@ mod tests {
     }
 
     #[test]
-    fn drawdown_skipped_when_peak_not_positive() {
+    fn drawdown_skipped_when_peak_below_threshold() {
+        // Case 1: peak_pnl = 0.0 (no peak established)
         let state = make_state("POOL", 0.0, false, false);
         let mut rm = monitor_all(state, Some(15.0), None, None);
-        // peak_pnl <= 0 — drawdown check must be skipped
         let snap = make_snap(-50.0, 0.0, 1000.0);
         let action = rm.evaluate(&snap, None);
         assert_eq!(action, RiskAction::Continue);
+        assert!(!rm.state.halt_flag);
+
+        // Case 2: peak_pnl = 0.5 (noise level, below MIN_PEAK_USD=1.0)
+        // Previously this triggered a false halt: drawdown = (0.5 - (-0.12)) / 0.5 * 100 = 124%
+        let state2 = make_state("POOL", 0.5, false, false);
+        let mut rm2 = monitor_all(state2, Some(15.0), None, None);
+        let snap2 = make_snap(-0.12, 0.0, 1000.0);
+        let action2 = rm2.evaluate(&snap2, None);
+        assert_eq!(action2, RiskAction::Continue);
+        assert!(!rm2.state.halt_flag);
     }
 
     #[test]
