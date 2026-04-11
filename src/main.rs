@@ -690,7 +690,6 @@ async fn main() -> Result<()> {
                     "[{}] Pool update received",
                     chrono::Utc::now().format("%H:%M:%S UTC")
                 );
-                println!();
 
                 let pool_data =
                     match rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program) {
