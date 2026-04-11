@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 Phase: 05 (live-execution) — COMPLETE
 Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-04-11 - Completed quick task 260411-l5d: Bug: --entry-price ignored in watch loop, IL always zero
+Last activity: 2026-04-11 - Completed quick task 260411-qr9: Fix IL=0 due to decimal scaling mismatch in watch loop
 
 Progress: [██████████] 100%
 
@@ -76,6 +76,8 @@ None yet.
 | 260411-k7g | Add --entry-price flag to watch subcommand CLI | 2026-04-11 | a20fc61 | [260411-k7g-add-optional-entry-price-flag-to-watch-s](./quick/260411-k7g-add-optional-entry-price-flag-to-watch-s/) |
 | 260411-ku8 | Bug fix — drawdown halt triggers on noise-level peak_pnl | 2026-04-11 | a27f424 | [260411-ku8-bug-fix-drawdown-halt-triggers-on-noise-](./quick/260411-ku8-bug-fix-drawdown-halt-triggers-on-noise-/) |
 | 260411-l5d | Bug: --entry-price ignored in watch loop, IL always zero | 2026-04-11 | 0f57e7c | [260411-l5d-bug-entry-price-ignored-in-watch-loop-il](./quick/260411-l5d-bug-entry-price-ignored-in-watch-loop-il/) |
+| 260411-qjf | Fix fees double-counting in 24H report SQL | 2026-04-11 | 42f0467 | [260411-qjf-fix-fees-double-counting-in-24h-report-s](./quick/260411-qjf-fix-fees-double-counting-in-24h-report-s/) |
+| 260411-qr9 | Fix IL=0 due to decimal scaling mismatch in watch loop | 2026-04-11 | b4ccfac | [260411-qr9-bug-entry-price-watch-il-0](./quick/260411-qr9-bug-entry-price-watch-il-0/) |
 
 ### Blockers/Concerns
 
