@@ -151,7 +151,8 @@ pub fn parse_pool(data: &[u8]) -> Result<WhirlpoolPool> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
-    WhirlpoolPool::try_from_slice(&data[DISC..])
+    let mut cursor = &data[DISC..];
+    WhirlpoolPool::deserialize(&mut cursor)
         .map_err(|e| anyhow!("Failed to deserialize Whirlpool pool: {}", e))
 }
 
