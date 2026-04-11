@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 Phase: 05 (live-execution) — COMPLETE
 Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-04-10
+Last activity: 2026-04-11 - Completed quick task 260411-ku8: Bug fix — drawdown halt triggers on noise-level peak_pnl
 
 Progress: [██████████] 100%
 
@@ -68,6 +68,13 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 None yet.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260411-k7g | Add --entry-price flag to watch subcommand CLI | 2026-04-11 | a20fc61 | [260411-k7g-add-optional-entry-price-flag-to-watch-s](./quick/260411-k7g-add-optional-entry-price-flag-to-watch-s/) |
+| 260411-ku8 | Bug fix — drawdown halt triggers on noise-level peak_pnl | 2026-04-11 | a27f424 | [260411-ku8-bug-fix-drawdown-halt-triggers-on-noise-](./quick/260411-ku8-bug-fix-drawdown-halt-triggers-on-noise-/) |
 
 ### Blockers/Concerns
 
