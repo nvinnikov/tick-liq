@@ -65,6 +65,10 @@ Recent decisions affecting current work:
 - Off-chain maker attribution (wallet → real-world firm) is out of scope for legal/privacy reasons.
 - Backtest framework unchanged — any SPEC-02 policy validated post-milestone with the existing `backtest` subcommand.
 
+### Roadmap Evolution
+
+- Phase 11 added: CEX price feed via Binance WebSocket
+
 ### Pending Todos
 
 None yet (v1.1 not started).
