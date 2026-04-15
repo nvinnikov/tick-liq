@@ -77,8 +77,28 @@
 
 ## Traceability
 
-*Populated by roadmapper after phase breakdown.*
+Coverage: 21/21 v1.1 requirements mapped to phases 6–10. ✓
 
-| REQ-ID | Phase |
-|--------|-------|
-| _(to be filled)_ | |
+| REQ-ID     | Phase                                    | Status  |
+|------------|------------------------------------------|---------|
+| CENSUS-01  | Phase 6 — Pool Census                    | Pending |
+| CENSUS-02  | Phase 6 — Pool Census                    | Pending |
+| CENSUS-03  | Phase 6 — Pool Census                    | Pending |
+| FILTER-01  | Phase 7 — Active Maker Filter            | Pending |
+| FILTER-02  | Phase 7 — Active Maker Filter            | Pending |
+| FILTER-03  | Phase 7 — Active Maker Filter            | Pending |
+| DEEP-01    | Phase 8 — Maker Deep-Dive                | Pending |
+| DEEP-02    | Phase 8 — Maker Deep-Dive                | Pending |
+| DEEP-03    | Phase 8 — Maker Deep-Dive                | Pending |
+| DEEP-04    | Phase 8 — Maker Deep-Dive                | Pending |
+| DEEP-05    | Phase 8 — Maker Deep-Dive                | Pending |
+| DEEP-06    | Phase 8 — Maker Deep-Dive                | Pending |
+| LAND-01    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| LAND-02    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| LAND-03    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| SIZE-01    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| SIZE-02    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| SIZE-03    | Phase 9 — Landscape & Opportunity Sizing | Pending |
+| SPEC-01    | Phase 10 — Strategy Specification        | Pending |
+| SPEC-02    | Phase 10 — Strategy Specification        | Pending |
+| SPEC-03    | Phase 10 — Strategy Specification        | Pending |

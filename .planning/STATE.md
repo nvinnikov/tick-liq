@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: maker-strategy-research
-status: defining-requirements
+status: roadmap-approved
 stopped_at: ""
 last_updated: "2026-04-15T00:00:00.000Z"
 last_activity: 2026-04-15
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -18,17 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-09)
+See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Profitable, hands-off LP with automated rebalancing and delta hedge — verifiable in shadow before any capital is at risk.
-**Current focus:** v1.1 Maker Strategy Research — defining requirements
+**Current focus:** v1.1 Maker Strategy Research — roadmap drafted, awaiting phase planning.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 6 (Pool Census) — not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-15 — Milestone v1.1 started (Maker Strategy Research)
+Status: Roadmap created; ready for `/gsd-plan-phase 6`
+Last activity: 2026-04-15 — v1.1 roadmap written (5 phases, 6–10)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -48,7 +48,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Recent Trend:**
 
-- Last 5 plans: none yet
+- Last 5 plans: none yet in v1.1
 - Trend: -
 
 *Updated after each plan completion*
@@ -60,14 +60,14 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Phase 0: Skip Jito for v1 — slippage guard sufficient at $20-30k capital
-- Phase 0: Backtest uses live-collected ticks only — no historical import
-- Phase 0: Shadow gate requires manual --live flag even if automated criteria pass
-- Phase 0: Risk limits are per-type configurable (IL pauses, drawdown closes all, margin-ratio closes hedge only)
+- v1.1 is research-only — zero production code changes until SPEC-01 is reviewed.
+- Single target pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` — no multi-pool scope creep.
+- Off-chain maker attribution (wallet → real-world firm) is out of scope for legal/privacy reasons.
+- Backtest framework unchanged — any SPEC-02 policy validated post-milestone with the existing `backtest` subcommand.
 
 ### Pending Todos
 
-None yet.
+None yet (v1.1 not started).
 
 ### Quick Tasks Completed
 
@@ -81,11 +81,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 3 (Real-Data Backtest) depends on Phase 1 accumulating ticks; meaningful backtest requires at least 2 weeks of watch data.
-- Phase 5 (Live Execution) devnet integration tests need funded devnet wallet and deployed Orca/Drift programs accessible.
+- Dune MCP server access required before Phase 6 can run queries.
+- Helius (or equivalent) RPC key with parsed-tx history required before Phase 8 event reconstruction.
+- Optional Birdeye/DexScreener key useful for Phase 9 pool-level time-series cross-check; not strictly blocking.
+- Phase numbering restart: v1.1 reuses phase indices 6 and 7 that were already consumed by v1.0. Archive entries remain under the collapsed v1.0 section of ROADMAP.md; active work refers to Phase 6+ as v1.1 phases.
 
 ## Session Continuity
 
-Last session: 2026-04-10T13:26:33.283Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-risk-limits/06-CONTEXT.md
+Last session: 2026-04-15T00:00:00.000Z
+Stopped at: v1.1 roadmap written, awaiting plan-phase on Phase 6
+Resume command: `/gsd-plan-phase 6`
