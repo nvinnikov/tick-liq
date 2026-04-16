@@ -24,8 +24,9 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 
 ### v1.1 Maker Strategy Research
 
-> **Research-only milestone.** Deliverables are markdown reports, Dune queries, and data exports under `.planning/research/v1.1/`. No changes to `src/` production code.
+> **Starts with one infrastructure phase (11), then research-only.** Deliverables are markdown reports, Dune queries, and data exports under `.planning/research/v1.1/`. Only Phase 11 touches `src/`.
 
+- [ ] **Phase 11: CEX price feed via Binance WebSocket** — replace on-chain pool price with independent CEX feed
 - [ ] **Phase 6: Pool Census** — enumerate every LP address on the target pool with lifetime stats
 - [ ] **Phase 7: Active Maker Filter** — define maker criteria, apply to census, classify archetypes
 - [ ] **Phase 8: Maker Deep-Dive** — pick one maker, reconstruct timeline, quantify cadence/width/fees/hedging signals
@@ -33,6 +34,12 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 - [ ] **Phase 10: Strategy Specification** — consolidate findings into spec, rebalance policy, and open-questions list
 
 ## Phase Details
+
+### Phase 11: CEX price feed via Binance WebSocket
+**Goal**: Replace on-chain pool price (tick_current_index) with an independent Binance WebSocket feed so the price used for rebalance decisions and IL calculation is not sourced from the pool being market-made.
+**Depends on**: Nothing (first phase of v1.1).
+**Requirements**: TBD
+**Plans**: TBD
 
 ### Phase 6: Pool Census
 **Goal**: Produce a complete, authoritative list of every address that has provided liquidity on pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` in the last 90 days, with per-address lifetime stats.
@@ -102,6 +109,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 | 5. Live Execution | v1.0 | 2/2 | Complete | 2026-04-10 |
 | 6. Risk Limits | v1.0 | 3/3 | Complete (partial) | 2026-04-10 |
 | 7. Telegram Bot | v1.0 | 3/3 | Complete | 2026-04-10 |
+| 11. CEX price feed via Binance WebSocket | v1.1 | 0/0 | Not started | - |
 | 6. Pool Census | v1.1 | 0/0 | Not started | - |
 | 7. Active Maker Filter | v1.1 | 0/0 | Not started | - |
 | 8. Maker Deep-Dive | v1.1 | 0/0 | Not started | - |
