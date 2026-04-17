@@ -13,9 +13,9 @@
 //!
 //! This is an intentional, documented approximation (T-03-09 accepted risk).
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
-use crate::backtest::{price_to_tick, BacktestResult, DayResult, ParamsSnapshot};
+use crate::backtest::{BacktestResult, DayResult, ParamsSnapshot, price_to_tick};
 use crate::math::il::compute_il;
 use crate::math::sqrt_price::sqrt_q64_to_price;
 use crate::storage::tick_reader::PoolTickRow;

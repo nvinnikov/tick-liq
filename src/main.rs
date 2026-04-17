@@ -609,14 +609,18 @@ async fn main() -> Result<()> {
                         eprintln!(
                             "ERROR: shadow gate FAILED: DATABASE_URL required for --live mode"
                         );
-                        eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
+                        eprintln!(
+                            "Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live."
+                        );
                         std::process::exit(2);
                     }
                     Some(pg) => {
                         let status = storage::writer::check_shadow_gate(pg, &pool_addr).await?;
                         if !status.is_pass() {
                             eprintln!("ERROR: {}", status.describe());
-                            eprintln!("Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live.");
+                            eprintln!(
+                                "Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live."
+                            );
                             std::process::exit(2);
                         }
                         tracing::info!("shadow gate passed; entering LIVE mode");
@@ -931,53 +935,54 @@ async fn main() -> Result<()> {
                 // ── Persist tick snapshot + P&L (D-05: pnl write before risk gate) ─
                 // pool_ticks write (durable) + pnl_history write (fire-and-forget).
                 // Risk gate runs immediately after these writes.
-                let snap_opt: Option<storage::writer::PnlSnapshot> = if let Some(pg) = db_pool.as_ref() {
-                    // Extract Solana slot from the accountNotification context.
-                    let slot: i64 = json
-                        .pointer("/params/result/context/slot")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
+                let snap_opt: Option<storage::writer::PnlSnapshot> =
+                    if let Some(pg) = db_pool.as_ref() {
+                        // Extract Solana slot from the accountNotification context.
+                        let slot: i64 = json
+                            .pointer("/params/result/context/slot")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
 
-                    let now = chrono::Utc::now();
+                        let now = chrono::Utc::now();
 
-                    let tick = storage::writer::PoolTick {
-                        pool_address: pool_addr_clone.clone(),
-                        slot,
-                        tick_current: pool.tick_current_index,
-                        sqrt_price: pool.sqrt_price,
-                        liquidity: pool.liquidity,
-                        fee_growth_global_a: pool.fee_growth_global_a,
-                        fee_growth_global_b: pool.fee_growth_global_b,
-                        observed_at: now,
+                        let tick = storage::writer::PoolTick {
+                            pool_address: pool_addr_clone.clone(),
+                            slot,
+                            tick_current: pool.tick_current_index,
+                            sqrt_price: pool.sqrt_price,
+                            liquidity: pool.liquidity,
+                            fee_growth_global_a: pool.fee_growth_global_a,
+                            fee_growth_global_b: pool.fee_growth_global_b,
+                            observed_at: now,
+                        };
+
+                        // Await write_pool_tick (durability checkpoint). The callback
+                        // runs inside a tokio runtime; block_in_place lets us call
+                        // block_on without violating single-threaded executor rules.
+                        let write_result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(storage::writer::write_pool_tick(pg, &tick))
+                        });
+                        if let Err(e) = write_result {
+                            tracing::warn!(error = %e, "pool_ticks write failed");
+                        }
+
+                        let snap = storage::writer::PnlSnapshot {
+                            mint: mint_str.clone(),
+                            pool_address: pool_addr_clone.clone(),
+                            fees_earned: computed_fees_earned,
+                            il_usd: computed_il_usd,
+                            net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                            position_value: computed_position_value,
+                            price: price_current,
+                            observed_at: now,
+                        };
+                        // Fire-and-forget: does not block tick processing (PERSIST-03).
+                        std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
+                        Some(snap)
+                    } else {
+                        None
                     };
-
-                    // Await write_pool_tick (durability checkpoint). The callback
-                    // runs inside a tokio runtime; block_in_place lets us call
-                    // block_on without violating single-threaded executor rules.
-                    let write_result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(storage::writer::write_pool_tick(pg, &tick))
-                    });
-                    if let Err(e) = write_result {
-                        tracing::warn!(error = %e, "pool_ticks write failed");
-                    }
-
-                    let snap = storage::writer::PnlSnapshot {
-                        mint: mint_str.clone(),
-                        pool_address: pool_addr_clone.clone(),
-                        fees_earned: computed_fees_earned,
-                        il_usd: computed_il_usd,
-                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
-                        position_value: computed_position_value,
-                        price: price_current,
-                        observed_at: now,
-                    };
-                    // Fire-and-forget: does not block tick processing (PERSIST-03).
-                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
-                    Some(snap)
-                } else {
-                    None
-                };
 
                 // ── Risk gate (D-04: every tick; D-05: after pnl_write, before should_rebalance) ──
                 if let (Some(snap), Some(risk_arc)) = (&snap_opt, &risk_monitor_opt) {
@@ -1046,7 +1051,9 @@ async fn main() -> Result<()> {
                     if let Some(pg) = db_pool.as_ref() {
                         strategy::risk_monitor::RiskMonitor::persist_state(pg.clone(), risk_state);
                     } else {
-                        tracing::warn!("risk: db_pool unexpectedly None inside risk gate, skipping persist");
+                        tracing::warn!(
+                            "risk: db_pool unexpectedly None inside risk gate, skipping persist"
+                        );
                     }
 
                     if halt_tick {
@@ -1093,9 +1100,7 @@ async fn main() -> Result<()> {
                     // When --telegram is active, send a proposal message and await
                     // /approve within the configured timeout before proceeding.
                     // The callback is a sync Fn so async calls use block_in_place.
-                    if let (Some(tg_bot), Some(tg_chat)) =
-                        (&telegram_bot, telegram_chat_id)
-                    {
+                    if let (Some(tg_bot), Some(tg_chat)) = (&telegram_bot, telegram_chat_id) {
                         // Build plan to get range_width for the proposal message.
                         let plan = execution::build_rebalance_plan(
                             &mint_str,
@@ -1192,8 +1197,7 @@ async fn main() -> Result<()> {
                                 pos.tick_upper_index,
                                 pool.tick_spacing as i32,
                             );
-                            let range_width =
-                                (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                            let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
                             tracing::info!(
                                 pool = %pool_addr_clone,
                                 trigger = %reason,

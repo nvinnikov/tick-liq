@@ -2,4 +2,4 @@
 //! `crate::math::fees`.
 
 pub use crate::math::fees::compute_accrued_fees;
-pub use crate::math::il::{compute_il, PnlResult};
+pub use crate::math::il::{PnlResult, compute_il};
