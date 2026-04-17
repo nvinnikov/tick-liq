@@ -757,14 +757,17 @@ async fn main() -> Result<()> {
             let cex_price_state: data::cex_ws::CexPriceState =
                 std::sync::Arc::new(std::sync::RwLock::new(None));
 
-            if let Some(ref sym) = cex_symbol {
+            let _cex_handle = if let Some(ref sym) = cex_symbol {
                 let sym_owned = sym.clone();
                 let state_clone = std::sync::Arc::clone(&cex_price_state);
                 let cex_shutdown = shutdown_tx.subscribe();
-                tokio::spawn(async move {
+                Some(tokio::spawn(async move {
                     data::cex_ws::watch_binance_price(sym_owned, state_clone, cex_shutdown).await;
-                });
-            }
+                    tracing::warn!("cex_ws: feed task exited");
+                }))
+            } else {
+                None
+            };
 
             // Graceful shutdown on Ctrl+C.
             tokio::spawn(async move {
