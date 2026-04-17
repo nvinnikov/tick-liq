@@ -17,6 +17,7 @@ use anyhow::{bail, Result};
 
 use crate::backtest::{price_to_tick, BacktestResult, DayResult, ParamsSnapshot};
 use crate::math::il::compute_il;
+use crate::math::sqrt_price::sqrt_q64_to_price;
 use crate::storage::tick_reader::PoolTickRow;
 use crate::strategy::{self, RebalanceConfig, RebalanceDecision};
 
@@ -45,17 +46,6 @@ pub struct DbBacktestInput {
     /// Width factor applied to the upper bound on rebalance
     /// (e.g. 1.05 → new_upper = price * 1.05).
     pub range_factor_upper: f64,
-}
-
-/// Convert a sqrt_price in X64 fixed-point (u128) to a floating-point price.
-///
-/// Matches the watch-loop derivation: price = (sqrt_price / 2^64)^2.
-#[inline]
-pub(crate) fn sqrt_price_to_price(sqrt_price: u128) -> f64 {
-    // 2^64 as f64
-    const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0_f64;
-    let s = sqrt_price as f64 / TWO_POW_64;
-    s * s
 }
 
 /// Compute fee-growth delta with u128 wrapping support.
@@ -105,7 +95,7 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     let mut day_results: Vec<DayResult> = Vec::new();
 
     for (i, t) in ticks.iter().enumerate() {
-        let price = sqrt_price_to_price(t.sqrt_price);
+        let price = sqrt_q64_to_price(t.sqrt_price);
         let day_date = t.time.date_naive();
         let in_range = t.tick_current >= tick_lower && t.tick_current <= tick_upper;
 
@@ -182,7 +172,7 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
     // ── Flush the final day ─────────────────────────────────────────────────
     let last = ticks.last().unwrap(); // safe: non-empty checked above
-    let final_price = sqrt_price_to_price(last.sqrt_price);
+    let final_price = sqrt_q64_to_price(last.sqrt_price);
     let final_in_range = last.tick_current >= tick_lower && last.tick_current <= tick_upper;
 
     if final_in_range {
@@ -297,13 +287,13 @@ mod tests {
     #[test]
     fn sqrt_price_conversion_matches_watch_loop() {
         // sqrt_price = 2^64 → price = 1.0
-        let p = sqrt_price_to_price(1u128 << 64);
+        let p = sqrt_q64_to_price(1u128 << 64);
         assert!((p - 1.0).abs() < 1e-9, "expected 1.0, got {}", p);
     }
 
     #[test]
     fn sqrt_price_zero_gives_zero() {
-        assert_eq!(sqrt_price_to_price(0), 0.0);
+        assert_eq!(sqrt_q64_to_price(0), 0.0);
     }
 
     // ── Empty tick stream ────────────────────────────────────────────────────
