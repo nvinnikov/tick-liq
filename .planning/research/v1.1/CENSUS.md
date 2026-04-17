@@ -41,8 +41,8 @@ The `whirlpool_solana` decoded tables have data through **2026-02-04** only. No 
 
 | Metric | Value |
 |--------|-------|
-| Total unique LP addresses (all-time through 2026-02-04) | **57,057** |
-| LP addresses active in last available 90 days (Nov 6, 2025 – Feb 4, 2026) | ~5,200 (v1) + ~222 (v2), some overlap |
+| Total unique LP addresses (all-time through 2026-02-04) | **57,057** (deduplicated via `UNION` across v1+v2) |
+| Unique LPs active in last available 90 days (Nov 6, 2025 – Feb 4, 2026) | 5,186 (v1) + 222 (v2) before dedup; overlap not counted separately |
 | Total `increase_liquidity` events | 62,756 (last 90d) / 34M+ (all-time) |
 | Total `collect_fees` events | 42,773 (last 90d) |
 
@@ -50,12 +50,14 @@ The `whirlpool_solana` decoded tables have data through **2026-02-04** only. No 
 
 ## Dune Queries
 
-| Query | Purpose | URL |
+> **Note**: Queries below were created as temporary via Dune MCP (`is_temp: true`) and are not publicly accessible. Use the SQL in this document to reproduce — paste into any Dune editor and run.
+
+| Query | Purpose | Query ID (owner only) |
 |-------|---------|-----|
-| Data coverage check | Verify pool has data, date ranges | https://dune.com/queries/7331925 |
-| **Full LP census** | All LP addresses with lifetime stats | https://dune.com/queries/7331964 |
-| Total unique LP count | UNION deduplication count | https://dune.com/queries/7331982 |
-| Pool init info | Token pair, tick spacing, creation date | https://dune.com/queries/7331984 |
+| Data coverage check | Verify pool has data, date ranges | 7331925 |
+| **Full LP census** | All LP addresses with lifetime stats | 7331964 |
+| Total unique LP count | UNION deduplication count | 7331982 |
+| Pool init info | Token pair, tick spacing, creation date | 7331984 |
 
 ### Census SQL
 
@@ -124,7 +126,7 @@ SELECT
     COALESCE(f.positions_with_fees, 0)    AS positions_with_fees,
     l.first_seen,
     l.last_seen,
-    DATE_DIFF('day', l.first_seen, l.last_seen) AS active_days
+    date_diff('day', l.first_seen, l.last_seen) AS active_days
 FROM lp_stats l
 LEFT JOIN fee_stats f ON l.lp_address = f.lp_address
 ORDER BY l.total_liquidity_added DESC
@@ -134,8 +136,10 @@ ORDER BY l.total_liquidity_added DESC
 
 ## Top LP Addresses (by total liquidity added, all-time)
 
-| Rank | LP Address | Positions | Increase Txns | Total Liquidity | Fee Collects | Active Days | Notes |
-|------|-----------|-----------|--------------|----------------|-------------|-------------|-------|
+_Total Liquidity column = raw Whirlpool liquidity units (uint256), not USD. See Data Limitations §4._
+
+| Rank | LP Address | Positions | Increase Txns | Total Liquidity (raw) | Fee Collects | Active Days | Notes |
+|------|-----------|-----------|--------------|----------------------|-------------|-------------|-------|
 | 1 | `882DFRCi...` | 668 | 594,519 | 6.15e18 | 4,321 | 24 | Ultra-high-freq bot, 24 days |
 | 2 | `Dh6mgdhy...` | 3 | 56,735 | 5.64e17 | 0 | 61 | High-freq, no fee collects |
 | 3 | `FfarNfcL...` | 2 | 16,512 | 2.79e17 | 0 | 22 | High-freq, no fee collects |
@@ -182,7 +186,7 @@ Key tables in `whirlpool_solana` schema:
 2. **No fee amounts**: `collectfees` table records the call but not the token amounts collected. Actual fee revenue requires cross-referencing token transfer logs.
 3. **`closeposition` gap**: Close events can't be filtered by pool without a join to `openposition`.
 4. **Liquidity units**: `liquidityAmount` is in raw Whirlpool liquidity units (uint256), not USD. Conversion requires current price.
-5. **v1/v2 overlap**: Both `increaseliquidity` and `increaseliquidityv2` can be called by the same wallet; UNION (not UNION ALL) required for unique LP count.
+5. **v1/v2 overlap**: Both `increaseliquidity` and `increaseliquidityv2` can be called by the same wallet. The census SQL uses `UNION ALL` inside CTCs (correct — dedup happens via `GROUP BY lp_address`). A bare `SELECT COUNT(DISTINCT ...)` across both tables requires `UNION` (not `UNION ALL`) to avoid double-counting wallets.
 
 ---
 
@@ -199,9 +203,9 @@ For data beyond 2026-02-04:
 ## Reproducibility
 
 To reproduce the census:
-1. Open https://dune.com/queries/7331964
-2. Click "Run" — no parameters needed
-3. Result set = all LP addresses with lifetime stats through 2026-02-04
+1. Copy the Census SQL from the section above
+2. Paste into any Dune editor (https://dune.com/queries/new) — no parameters needed
+3. Run — result set = all LP addresses with lifetime stats through 2026-02-04
 4. Address set is deterministic (no randomness in SQL)
 
 > The address set will be byte-identical on re-runs as long as Dune's data coverage doesn't extend further (which would add new rows).
