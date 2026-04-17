@@ -349,7 +349,7 @@ mod tests {
         let input = default_input(); // position_liquidity = 100
         let result = run_db_backtest(input, &ticks).unwrap();
 
-        let expected_fees = (100_u128 as f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (100_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-20,
             "expected fees ~{:.2e}, got {:.2e}",
@@ -370,7 +370,7 @@ mod tests {
         let result = run_db_backtest(input, &ticks).unwrap();
 
         // delta = wrapping_sub(5, u128::MAX) = 6
-        let expected_fees = (6_u128 as f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (6_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-30,
             "expected wrapping fees ~{:.2e}, got {:.2e}",

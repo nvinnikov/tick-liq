@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_fetch_mint_decimals_reads_correct_byte() {
-        let mut data = vec![0u8; 82]; // SPL mint is 82 bytes
+        let mut data = [0u8; 82]; // SPL mint is 82 bytes
         data[MINT_DECIMALS_OFFSET] = 9;
         assert_eq!(data[MINT_DECIMALS_OFFSET], 9);
         data[MINT_DECIMALS_OFFSET] = 6;

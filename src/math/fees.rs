@@ -23,7 +23,7 @@ pub fn compute_accrued_fees(
     // Lower 64 bits only (the a_hi*b_hi * 2^64 term is negligible for realistic LP values):
     let mid = (a_hi * b_lo)
         .wrapping_add(a_lo * b_hi)
-        .wrapping_add(a_lo * b_lo >> 64);
+        .wrapping_add((a_lo * b_lo) >> 64);
     mid as u64
 }
 
