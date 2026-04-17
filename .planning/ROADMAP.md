@@ -40,7 +40,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 **Depends on**: Nothing (first phase of v1.1).
 **Requirements**: TBD
 **Plans**: 2 plans
-- [ ] 11-01-PLAN.md — Binance bookTicker WS module (src/data/cex_ws.rs) with parser, reconnect loop, shared state; unit tests
+- [x] 11-01-PLAN.md — Binance bookTicker WS module (src/data/cex_ws.rs) with parser, reconnect loop, shared state; unit tests
 - [ ] 11-02-PLAN.md — Wire --cex-symbol CLI flag, spawn Binance task, resolve CEX-or-fallback price in watch loop; human-verify live feed
 
 ### Phase 6: Pool Census
@@ -111,7 +111,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 | 5. Live Execution | v1.0 | 2/2 | Complete | 2026-04-10 |
 | 6. Risk Limits | v1.0 | 3/3 | Complete (partial) | 2026-04-10 |
 | 7. Telegram Bot | v1.0 | 3/3 | Complete | 2026-04-10 |
-| 11. CEX price feed via Binance WebSocket | v1.1 | 0/2 | Not started | - |
+| 11. CEX price feed via Binance WebSocket | v1.1 | 1/2 | In Progress|  |
 | 6. Pool Census | v1.1 | 0/0 | Not started | - |
 | 7. Active Maker Filter | v1.1 | 0/0 | Not started | - |
 | 8. Maker Deep-Dive | v1.1 | 0/0 | Not started | - |
