@@ -18,6 +18,19 @@ pub enum Command {
     Approve,
 }
 
+fn check_auth(msg: &Message, state: &BotState, cmd: &str) -> bool {
+    if msg.chat.id.0 != state.chat_id {
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized {} attempt",
+            cmd
+        );
+        false
+    } else {
+        true
+    }
+}
+
 pub fn build_handler() -> UpdateHandler<anyhow::Error> {
     let command_handler = teloxide::filter_command::<Command, _>()
         .branch(case![Command::Status].endpoint(handle_status))
@@ -30,12 +43,7 @@ pub fn build_handler() -> UpdateHandler<anyhow::Error> {
 }
 
 async fn handle_status(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
-    // Auth gate: only authorized chat_id can interact (T-07-02)
-    if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(
-            unauthorized_chat = msg.chat.id.0,
-            "unauthorized /status attempt"
-        );
+    if !check_auth(&msg, &state, "/status") {
         return Ok(());
     }
 
@@ -86,12 +94,7 @@ async fn handle_status(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
 }
 
 async fn handle_pause(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
-    // Auth gate: only authorized chat_id can interact (T-07-02)
-    if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(
-            unauthorized_chat = msg.chat.id.0,
-            "unauthorized /pause attempt"
-        );
+    if !check_auth(&msg, &state, "/pause") {
         return Ok(());
     }
 
@@ -117,12 +120,7 @@ async fn handle_pause(bot: Bot, msg: Message, state: BotState) -> anyhow::Result
 }
 
 async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
-    // Auth gate: only authorized chat_id can interact (T-07-02)
-    if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(
-            unauthorized_chat = msg.chat.id.0,
-            "unauthorized /resume attempt"
-        );
+    if !check_auth(&msg, &state, "/resume") {
         return Ok(());
     }
 
@@ -133,10 +131,7 @@ async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
                 rm.state.operator_pause = false;
             }
             let warning = {
-                let rm = state
-                    .risk_monitor
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let rm = state.risk_monitor.lock().unwrap_or_else(|p| p.into_inner());
                 if rm.state.pause_flag {
                     "\nNote: IL-triggered pause is still active. Rebalancing will resume when IL recovers."
                 } else {
@@ -159,12 +154,7 @@ async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
 }
 
 async fn handle_report(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
-    // Auth gate: only authorized chat_id can interact (T-07-02)
-    if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(
-            unauthorized_chat = msg.chat.id.0,
-            "unauthorized /report attempt"
-        );
+    if !check_auth(&msg, &state, "/report") {
         return Ok(());
     }
 
@@ -204,12 +194,7 @@ async fn handle_report(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
 }
 
 async fn handle_approve(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
-    // Auth gate: only authorized chat_id can approve (T-07-02)
-    if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(
-            unauthorized_chat = msg.chat.id.0,
-            "unauthorized /approve attempt"
-        );
+    if !check_auth(&msg, &state, "/approve") {
         return Ok(());
     }
 
