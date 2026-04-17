@@ -483,7 +483,12 @@ async fn main() -> Result<()> {
             cex_symbol,
         } => {
             match &cex_symbol {
-                Some(sym) => tracing::info!("cex_ws: Binance feed will start for {}", sym),
+                Some(sym) => {
+                    if sym.trim().is_empty() {
+                        anyhow::bail!("--cex-symbol must not be empty");
+                    }
+                    tracing::info!("cex_ws: Binance feed will start for {}", sym);
+                }
                 None => tracing::info!("--cex-symbol not set, using on-chain price"),
             }
 
