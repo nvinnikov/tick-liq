@@ -985,7 +985,13 @@ async fn main() -> Result<()> {
                         rm.evaluate(snap, drift_margin)
                     };
 
-                    let pg_for_persist = db_pool.as_ref().unwrap().clone();
+                    let pg_for_persist = match db_pool.as_ref() {
+                        Some(pg) => pg.clone(),
+                        None => {
+                            tracing::warn!("risk: db_pool unexpectedly None inside risk gate, skipping persist");
+                            return;
+                        }
+                    };
 
                     match &risk_action {
                         strategy::risk_monitor::RiskAction::HaltAll { drawdown_pct } => {
