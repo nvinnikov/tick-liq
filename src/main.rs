@@ -94,6 +94,13 @@ enum Commands {
         /// cached entry price instead of using the current pool price at watch start.
         #[arg(long)]
         entry_price: Option<f64>,
+        /// CEX symbol for Binance @bookTicker price feed (e.g. SOLUSDT).
+        /// When set, Binance mid-price replaces on-chain sqrt_price for IL / P&L /
+        /// rebalance-signal P&L gate. On-chain `tick_current_index` is still used for
+        /// range-boundary checks. When absent, on-chain price is used throughout
+        /// (existing Phase 2 behavior).
+        #[arg(long)]
+        cex_symbol: Option<String>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -473,7 +480,13 @@ async fn main() -> Result<()> {
             telegram,
             approve_timeout_secs,
             entry_price,
+            cex_symbol,
         } => {
+            match &cex_symbol {
+                Some(sym) => tracing::info!("cex_ws: Binance feed will start for {}", sym),
+                None => tracing::info!("--cex-symbol not set, using on-chain price"),
+            }
+
             // Validate risk limit flags
             if let Some(dd) = max_drawdown {
                 if *dd <= 0.0 || *dd > 100.0 {
