@@ -522,8 +522,7 @@ async fn main() -> Result<()> {
             // compute_accrued_fees needs (global_now - global_at_watch_start) not
             // (global_now - fee_growth_inside_at_open) which would be a protocol
             // mismatch producing wrong/zero results.
-            let init_pool_data =
-                rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
+            let init_pool_data = rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
             let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
@@ -539,15 +538,18 @@ async fn main() -> Result<()> {
             // so the Bug 3 guard (which checks is_none()) will skip the pool-price fallback.
             if let Some(ep) = entry_price {
                 cache::save_entry_price(mint, *ep)?;
-                tracing::info!(entry_price = *ep, "entry price overridden via --entry-price flag");
+                tracing::info!(
+                    entry_price = *ep,
+                    "entry price overridden via --entry-price flag"
+                );
             }
 
             // ── Bug 3 fix: persist entry price on first observation ────────────
             // cache::load_entry_price returns None on first run because nothing
             // wrote the cache yet, causing IL to fall back to current price → IL=0.
             // Write it now (at watch start) so every subsequent tick can load it.
-            let entry_price_at_start = analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price)
-                * 10f64.powi(9 - 6);
+            let entry_price_at_start =
+                analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price) * 10f64.powi(9 - 6);
             if cache::load_entry_price(mint).is_none() {
                 if let Err(e) = cache::save_entry_price(mint, entry_price_at_start) {
                     tracing::warn!(error = %e, "failed to persist entry price to cache");
@@ -558,7 +560,8 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            let entry_price_for_watch = cache::load_entry_price(mint).unwrap_or(entry_price_at_start);
+            let entry_price_for_watch =
+                cache::load_entry_price(mint).unwrap_or(entry_price_at_start);
 
             let ws_url = cli
                 .rpc_url
@@ -768,8 +771,8 @@ async fn main() -> Result<()> {
                 };
 
                 // SOL=9 decimals, USDC=6 decimals → multiply raw price by 10^(9-6)=1000
-                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price)
-                    * 10f64.powi(9 - 6);
+                let price_current =
+                    analytics::greeks::sqrt_q64_to_price(pool.sqrt_price) * 10f64.powi(9 - 6);
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
@@ -957,7 +960,11 @@ async fn main() -> Result<()> {
                         strategy::risk_monitor::RiskAction::Continue => false,
                     };
 
-                    let risk_state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
+                    let risk_state = risk_arc
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .state
+                        .clone();
                     strategy::risk_monitor::RiskMonitor::persist_state(
                         db_pool.as_ref().unwrap().clone(),
                         risk_state,
@@ -1005,9 +1012,7 @@ async fn main() -> Result<()> {
                     // When --telegram is active, send a proposal message and await
                     // /approve within the configured timeout before proceeding.
                     // The callback is a sync Fn so async calls use block_in_place.
-                    if let (Some(ref tg_bot), Some(tg_chat)) =
-                        (&telegram_bot, telegram_chat_id)
-                    {
+                    if let (Some(ref tg_bot), Some(tg_chat)) = (&telegram_bot, telegram_chat_id) {
                         // Build plan to get range_width for the proposal message.
                         let plan = execution::build_rebalance_plan(
                             &mint_str,
@@ -1016,9 +1021,7 @@ async fn main() -> Result<()> {
                             pool.tick_spacing as i32,
                         );
                         let trigger_reason = match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
-                                reason.clone()
-                            }
+                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => reason.clone(),
                             _ => "unknown".to_string(),
                         };
                         let proposal_data = bot::proposal::ProposalData {
@@ -1027,10 +1030,8 @@ async fn main() -> Result<()> {
                             price: price_current,
                             simulated_fees_earned: computed_fees_earned,
                             simulated_il_usd: computed_il_usd,
-                            simulated_net_pnl: computed_fees_earned
-                                - computed_il_usd.abs(),
-                            range_width: (plan.new_tick_upper - plan.new_tick_lower)
-                                as f64,
+                            simulated_net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                            range_width: (plan.new_tick_upper - plan.new_tick_lower) as f64,
                         };
                         let chat_id = teloxide::types::ChatId(tg_chat);
 
@@ -1045,11 +1046,8 @@ async fn main() -> Result<()> {
                                 .await
                                 {
                                     Ok(rx) => {
-                                        bot::proposal::await_approval(
-                                            rx,
-                                            approve_timeout_secs_val,
-                                        )
-                                        .await
+                                        bot::proposal::await_approval(rx, approve_timeout_secs_val)
+                                            .await
                                     }
                                     Err(e) => {
                                         tracing::warn!(

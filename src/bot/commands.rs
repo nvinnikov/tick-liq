@@ -20,7 +20,11 @@ pub enum Command {
 
 fn check_auth(msg: &Message, state: &BotState, cmd: &str) -> bool {
     if msg.chat.id.0 != state.chat_id {
-        tracing::warn!(unauthorized_chat = msg.chat.id.0, "unauthorized {} attempt", cmd);
+        tracing::warn!(
+            unauthorized_chat = msg.chat.id.0,
+            "unauthorized {} attempt",
+            cmd
+        );
         false
     } else {
         true
@@ -127,10 +131,7 @@ async fn handle_resume(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
                 rm.state.operator_pause = false;
             }
             let warning = {
-                let rm = state
-                    .risk_monitor
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let rm = state.risk_monitor.lock().unwrap_or_else(|p| p.into_inner());
                 if rm.state.pause_flag {
                     "\nNote: IL-triggered pause is still active. Rebalancing will resume when IL recovers."
                 } else {
