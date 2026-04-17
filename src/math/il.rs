@@ -96,7 +96,12 @@ mod tests {
         let price_lower_scaled = 75.0_f64; // e.g. sqrt_q64_to_price(...) * 1000
         let price_upper_scaled = 95.0_f64;
 
-        let il = compute_il(entry_price, price_current, price_lower_scaled, price_upper_scaled);
+        let il = compute_il(
+            entry_price,
+            price_current,
+            price_lower_scaled,
+            price_upper_scaled,
+        );
         assert!(
             il < 0.0,
             "IL must be negative when price moved from entry: got {}",
