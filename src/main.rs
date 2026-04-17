@@ -763,7 +763,10 @@ async fn main() -> Result<()> {
                 let cex_shutdown = shutdown_tx.subscribe();
                 Some(tokio::spawn(async move {
                     data::cex_ws::watch_binance_price(sym_owned, state_clone, cex_shutdown).await;
-                    tracing::warn!("cex_ws: feed task exited");
+                    // `watch_binance_price` only returns on shutdown (broadcast
+                    // fired or channel closed), so this log fires on graceful
+                    // exit. Keep it at info! — warn! misled re-review (IN-04).
+                    tracing::info!("cex_ws: feed task exited cleanly");
                 }))
             } else {
                 None
@@ -1087,22 +1090,24 @@ async fn main() -> Result<()> {
                 }
 
                 // ── Shadow rebalance decision (SHADOW-02) ───────────────────────
-                // Wrap the full decision path so any error sets error_flag=true rather
-                // than aborting the tick callback (T-02-05).
+                // `should_rebalance` is infallible (returns `RebalanceDecision`),
+                // so there is no error path to preserve here. The earlier
+                // `Result<_, String>` wrapper was vestigial and made the
+                // `error_flag=true` branch below unreachable. If a real fallible
+                // decision path is ever introduced (e.g. catch_unwind around a
+                // panicking strategy), reintroduce the Result here and route
+                // errors into shadow_rebalances at that point.
                 let rebalance_config = strategy::RebalanceConfig::default();
-                let decision_result: Result<strategy::RebalanceDecision, String> =
-                    Ok(strategy::should_rebalance(
-                        pool.tick_current_index,
-                        pos.tick_lower_index,
-                        pos.tick_upper_index,
-                        computed_fees_earned + computed_il_usd,
-                        &rebalance_config,
-                    ));
-
-                let is_rebalance = matches!(
-                    &decision_result,
-                    Ok(strategy::RebalanceDecision::Rebalance { .. })
+                let decision = strategy::should_rebalance(
+                    pool.tick_current_index,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                    computed_fees_earned + computed_il_usd,
+                    &rebalance_config,
                 );
+
+                let is_rebalance =
+                    matches!(&decision, strategy::RebalanceDecision::Rebalance { .. });
 
                 // Gate: if a rebalance plan were to be submitted, check shadow guard first.
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
@@ -1122,10 +1127,8 @@ async fn main() -> Result<()> {
                             pos.tick_upper_index,
                             pool.tick_spacing as i32,
                         );
-                        let trigger_reason = match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
-                                reason.clone()
-                            }
+                        let trigger_reason = match &decision {
+                            strategy::RebalanceDecision::Rebalance { reason } => reason.clone(),
                             _ => "unknown".to_string(),
                         };
                         let proposal_data = bot::proposal::ProposalData {
@@ -1206,63 +1209,46 @@ async fn main() -> Result<()> {
                 }
 
                 // Build and spawn the shadow_rebalances row when a rebalance decision fires.
-                // We also write on error so the gate query in Plan 03 can count bad rows.
+                // `decision` is infallible here (see block above), so no error
+                // branch writes `error_flag=true`. If a fallible path is added,
+                // restore the error arm that feeds the Plan 03 bad-row gate.
                 if let Some(pg) = db_pool.as_ref() {
-                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
-                        match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
-                                let plan = execution::build_rebalance_plan(
-                                    &mint_str,
-                                    pos.tick_lower_index,
-                                    pos.tick_upper_index,
-                                    pool.tick_spacing as i32,
-                                );
-                                let range_width =
-                                    (plan.new_tick_upper - plan.new_tick_lower) as f64;
-                                tracing::info!(
-                                    pool = %pool_addr_clone,
-                                    trigger = %reason,
-                                    price = price_current,
-                                    error = false,
-                                    "shadow rebalance decision"
-                                );
-                                Some(storage::writer::ShadowRebalanceRow {
-                                    pool_address: pool_addr_clone.clone(),
-                                    trigger_reason: reason.replace(' ', "_"),
-                                    price: price_current,
-                                    simulated_range_width: Some(range_width),
-                                    simulated_fees_earned: Some(computed_fees_earned),
-                                    simulated_il_usd: Some(computed_il_usd),
-                                    simulated_net_pnl: Some(
-                                        computed_fees_earned - computed_il_usd.abs(),
-                                    ),
-                                    error_flag: false,
-                                    error_message: None,
-                                })
-                            }
-                            Ok(strategy::RebalanceDecision::Hold { .. }) => {
-                                // No rebalance needed this tick — do not write a row.
-                                None
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    pool = %pool_addr_clone,
-                                    error = %e,
-                                    "shadow rebalance decision error"
-                                );
-                                Some(storage::writer::ShadowRebalanceRow {
-                                    pool_address: pool_addr_clone.clone(),
-                                    trigger_reason: "error".to_string(),
-                                    price: price_current,
-                                    simulated_range_width: None,
-                                    simulated_fees_earned: None,
-                                    simulated_il_usd: None,
-                                    simulated_net_pnl: None,
-                                    error_flag: true,
-                                    error_message: Some(e.clone()),
-                                })
-                            }
-                        };
+                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> = match &decision {
+                        strategy::RebalanceDecision::Rebalance { reason } => {
+                            let plan = execution::build_rebalance_plan(
+                                &mint_str,
+                                pos.tick_lower_index,
+                                pos.tick_upper_index,
+                                pool.tick_spacing as i32,
+                            );
+                            let range_width =
+                                (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                            tracing::info!(
+                                pool = %pool_addr_clone,
+                                trigger = %reason,
+                                price = price_current,
+                                error = false,
+                                "shadow rebalance decision"
+                            );
+                            Some(storage::writer::ShadowRebalanceRow {
+                                pool_address: pool_addr_clone.clone(),
+                                trigger_reason: reason.replace(' ', "_"),
+                                price: price_current,
+                                simulated_range_width: Some(range_width),
+                                simulated_fees_earned: Some(computed_fees_earned),
+                                simulated_il_usd: Some(computed_il_usd),
+                                simulated_net_pnl: Some(
+                                    computed_fees_earned - computed_il_usd.abs(),
+                                ),
+                                error_flag: false,
+                                error_message: None,
+                            })
+                        }
+                        strategy::RebalanceDecision::Hold { .. } => {
+                            // No rebalance needed this tick — do not write a row.
+                            None
+                        }
+                    };
 
                     if let Some(row) = shadow_row {
                         storage::writer::spawn_shadow_write(pg.clone(), row);
