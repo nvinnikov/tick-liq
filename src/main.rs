@@ -757,7 +757,7 @@ async fn main() -> Result<()> {
             let cex_price_state: data::cex_ws::CexPriceState =
                 std::sync::Arc::new(std::sync::RwLock::new(None));
 
-            let _cex_handle = if let Some(ref sym) = cex_symbol {
+            let _cex_handle = if let Some(sym) = cex_symbol.as_ref() {
                 let sym_owned = sym.clone();
                 let state_clone = std::sync::Arc::clone(&cex_price_state);
                 let cex_shutdown = shutdown_tx.subscribe();
@@ -926,7 +926,7 @@ async fn main() -> Result<()> {
                 // ── Persist tick snapshot + P&L (D-05: pnl write before risk gate) ─
                 // pool_ticks write (durable) + pnl_history write (fire-and-forget).
                 // Risk gate runs immediately after these writes.
-                let snap_opt: Option<storage::writer::PnlSnapshot> = if let Some(ref pg) = db_pool {
+                let snap_opt: Option<storage::writer::PnlSnapshot> = if let Some(pg) = db_pool.as_ref() {
                     // Extract Solana slot from the accountNotification context.
                     let slot: i64 = json
                         .pointer("/params/result/context/slot")
@@ -975,7 +975,7 @@ async fn main() -> Result<()> {
                 };
 
                 // ── Risk gate (D-04: every tick; D-05: after pnl_write, before should_rebalance) ──
-                if let (Some(ref snap), Some(ref risk_arc)) = (&snap_opt, &risk_monitor_opt) {
+                if let (Some(snap), Some(risk_arc)) = (&snap_opt, &risk_monitor_opt) {
                     // Fetch Drift margin ratio synchronously (D-01) via block_in_place.
                     // Returns None on RPC failure (treat as "margin OK" per D-03).
                     let drift_margin = {
@@ -1078,7 +1078,7 @@ async fn main() -> Result<()> {
                 // ── Operator pause gate (D-04) ─────────────────────────────────
                 // Check operator_pause AFTER risk gate, BEFORE should_rebalance.
                 // This is independent from IL-triggered pause_flag.
-                if let Some(ref risk_arc) = &risk_monitor_opt {
+                if let Some(risk_arc) = &risk_monitor_opt {
                     let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
                     if rm.state.operator_pause {
                         tracing::debug!(pool = %pool_addr_clone, "operator pause active -- skipping rebalance");
@@ -1112,7 +1112,7 @@ async fn main() -> Result<()> {
                     // When --telegram is active, send a proposal message and await
                     // /approve within the configured timeout before proceeding.
                     // The callback is a sync Fn so async calls use block_in_place.
-                    if let (Some(ref tg_bot), Some(tg_chat)) =
+                    if let (Some(tg_bot), Some(tg_chat)) =
                         (&telegram_bot, telegram_chat_id)
                     {
                         // Build plan to get range_width for the proposal message.
@@ -1175,7 +1175,7 @@ async fn main() -> Result<()> {
 
                         if !approved {
                             // Log skip to DB (TG-02) and continue to next tick.
-                            if let Some(ref pg) = db_pool {
+                            if let Some(pg) = db_pool.as_ref() {
                                 let _ = tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(
                                         storage::writer::write_approval_skip(
@@ -1207,7 +1207,7 @@ async fn main() -> Result<()> {
 
                 // Build and spawn the shadow_rebalances row when a rebalance decision fires.
                 // We also write on error so the gate query in Plan 03 can count bad rows.
-                if let Some(ref pg) = db_pool {
+                if let Some(pg) = db_pool.as_ref() {
                     let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
                         match &decision_result {
                             Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
