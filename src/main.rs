@@ -558,6 +558,7 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            let entry_price_for_watch = cache::load_entry_price(mint).unwrap_or(entry_price_at_start);
 
             let ws_url = cli
                 .rpc_url
@@ -813,9 +814,7 @@ async fn main() -> Result<()> {
                     * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                // Bug 3 fix: entry price is now guaranteed to be in cache (written at
-                // watch start above). unwrap_or fallback kept as safety net only.
-                let entry_price = cache::load_entry_price(&mint_str).unwrap_or(price_current);
+                let entry_price = entry_price_for_watch;
 
                 let amounts_result = analytics::amounts::compute_token_amounts(
                     pos.liquidity,
@@ -918,28 +917,18 @@ async fn main() -> Result<()> {
                         rm.evaluate(snap, drift_margin)
                     };
 
-                    let pg_for_persist = db_pool.as_ref().unwrap().clone();
-
-                    match &risk_action {
+                    let halt_tick = match &risk_action {
                         strategy::risk_monitor::RiskAction::HaltAll { drawdown_pct } => {
                             tracing::error!(
                                 drawdown_pct,
                                 pool = %pool_addr_clone,
                                 "risk: drawdown limit breached -- halting all activity"
                             );
-                            // LP position close: OrcaExecutor CPI deferred to LIVE-02.
-                            // halt_flag is already set in evaluate(); persist it now (D-11).
                             tracing::error!(
                                 pool = %pool_addr_clone,
                                 "halt: drawdown limit hit -- LP close and Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Skip rest of tick cycle (D-06): no rebalance evaluation.
-                            return;
+                            true
                         }
                         strategy::risk_monitor::RiskAction::PauseRebalancing { il_pct } => {
                             tracing::warn!(
@@ -947,13 +936,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL pause active -- skipping rebalance this tick"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Skip should_rebalance (D-06).
-                            return;
+                            true
                         }
                         strategy::risk_monitor::RiskAction::ResumeRebalancing { il_pct } => {
                             tracing::info!(
@@ -961,12 +944,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL recovered -- resuming rebalance"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Fall through to should_rebalance()
+                            false
                         }
                         strategy::risk_monitor::RiskAction::CloseDriftHedge { margin_ratio } => {
                             tracing::error!(
@@ -974,23 +952,19 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: Drift margin below threshold -- Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // LP rebalance continues (RISK-03: only Drift side affected).
-                            // Fall through to should_rebalance()
+                            false
                         }
-                        strategy::risk_monitor::RiskAction::Continue => {
-                            // Persist state (peak_pnl may have been updated).
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Fall through to should_rebalance()
-                        }
+                        strategy::risk_monitor::RiskAction::Continue => false,
+                    };
+
+                    let risk_state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
+                    strategy::risk_monitor::RiskMonitor::persist_state(
+                        db_pool.as_ref().unwrap().clone(),
+                        risk_state,
+                    );
+
+                    if halt_tick {
+                        return;
                     }
                 }
 
