@@ -39,6 +39,7 @@ Rust CLI that monitors Orca Whirlpool and Raydium CLMM positions in real time, c
 - ✓ WALLET_KEYPAIR env var gate at startup — v1.0
 - ✓ Risk limits (drawdown/IL/margin-ratio) with per-limit actions — v1.0 ⚠ LP/hedge close CPIs deferred
 - ✓ Telegram bot (/approve, /status, /pause, /resume, /report) — v1.0
+- ✓ Binance bookTicker WebSocket CEX price feed (`src/data/cex_ws.rs`); `--cex-symbol` flag on `watch`; CEX-or-fallback resolver drives IL / P&L / rebalance signal — Phase 11 (2026-04-17)
 
 ### Active (v1.1 — research-only milestone)
 
