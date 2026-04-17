@@ -32,6 +32,12 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures-util = "0.3"
 
+# CEX (Phase 11.1, D-04 + user-locked v45 pin)
+# binance-sdk 45.0.0 released 2026-04-15, MSRV 1.86, tokio ≥ 1.33
+# default-features = false — 26 feature flags upstream, only "spot" is needed
+# TLS backend: default openssl-tls (D-04 + OQ-3)
+binance-sdk = { version = "45", features = ["spot"], default-features = false }
+
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
