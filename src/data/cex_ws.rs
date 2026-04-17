@@ -1,11 +1,18 @@
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use binance_sdk::config::ConfigurationWebsocketStreams;
 use binance_sdk::spot::SpotWsStreams;
 use binance_sdk::spot::websocket_streams::{BookTickerParams, BookTickerResponse};
+
+/// Backoff delay between initial-connect / subscription attempts.
+/// binance-sdk v45 handles in-session reconnects, but a failure *before*
+/// the connection is established (DNS, TLS, auth, malformed params …)
+/// is surfaced as a one-shot error — we retry it ourselves with a fixed
+/// 5 s delay until shutdown fires.
+const CONNECT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 pub struct CexPrice {
     pub price: f64,
@@ -64,42 +71,88 @@ fn apply_book_ticker(
 
 /// Watch Binance bookTicker stream for `symbol` (case-insensitive; lowercased by SDK params).
 /// Writes mid-price = (bid + ask) / 2 into `state` on every update.
-/// Reconnect / ping-pong / backoff handled by binance-sdk v45.
+///
+/// Reconnect / ping-pong / backoff *within a live session* are handled by
+/// binance-sdk v45. However, an **initial-connect failure** (DNS error,
+/// TLS handshake failure, config / params build error, book_ticker subscribe
+/// error) is surfaced as a one-shot `Result::Err` and is NOT retried by the
+/// SDK. We therefore wrap the connect / subscribe dance in our own
+/// reconnect-loop with a [`CONNECT_RETRY_DELAY`] backoff so that transient
+/// network issues at startup do not permanently disable the CEX price feed.
+///
 /// Returns on shutdown broadcast.
 pub async fn watch_binance_price(
     symbol: String,
     state: CexPriceState,
     mut shutdown: broadcast::Receiver<()>,
 ) {
-    let cfg = match ConfigurationWebsocketStreams::builder().build() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("cex_ws: config build error: {}", e);
+    loop {
+        // Check for shutdown before every connect attempt so we don't
+        // reconnect forever after the caller has torn everything down.
+        if shutdown.try_recv().is_ok() {
+            info!("cex_ws: shutdown received before connect, exiting");
             return;
         }
-    };
+
+        match try_connect_and_subscribe(&symbol, &state).await {
+            Ok(connection) => {
+                // Connection live; hold it until shutdown.
+                let _ = shutdown.recv().await;
+                info!("cex_ws: shutdown received, disconnecting");
+                if let Err(e) = connection.disconnect().await {
+                    warn!("cex_ws: disconnect error: {}", e);
+                }
+                return;
+            }
+            Err(e) => {
+                warn!(
+                    "cex_ws: initial connect/subscribe failed: {}; retrying in {}s",
+                    e,
+                    CONNECT_RETRY_DELAY.as_secs()
+                );
+                // Wait for either the backoff to elapse or shutdown, whichever
+                // comes first — avoids a pointless retry right before we exit.
+                tokio::select! {
+                    _ = tokio::time::sleep(CONNECT_RETRY_DELAY) => {}
+                    _ = shutdown.recv() => {
+                        info!("cex_ws: shutdown received during backoff, exiting");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build config / connect / subscribe to bookTicker.
+///
+/// Returns the live `WebsocketStreamsConnection` on success (caller is
+/// responsible for `disconnect()`), or an error string describing which
+/// step failed so the reconnect-loop can log it.
+async fn try_connect_and_subscribe(
+    symbol: &str,
+    state: &CexPriceState,
+) -> Result<binance_sdk::spot::websocket_streams::WebsocketStreams, String> {
+    let cfg = ConfigurationWebsocketStreams::builder()
+        .build()
+        .map_err(|e| format!("config build error: {e}"))?;
     let client = SpotWsStreams::production(cfg);
-    let connection = match client.connect().await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("cex_ws: connect error: {}", e);
-            return;
-        }
-    };
+    let connection = client
+        .connect()
+        .await
+        .map_err(|e| format!("connect error: {e}"))?;
     let params = match BookTickerParams::builder(symbol.to_lowercase()).build() {
         Ok(p) => p,
         Err(e) => {
-            warn!("cex_ws: params build error: {}", e);
             let _ = connection.disconnect().await;
-            return;
+            return Err(format!("params build error: {e}"));
         }
     };
     let stream = match connection.book_ticker(params).await {
         Ok(s) => s,
         Err(e) => {
-            warn!("cex_ws: book_ticker subscribe error: {}", e);
             let _ = connection.disconnect().await;
-            return;
+            return Err(format!("book_ticker subscribe error: {e}"));
         }
     };
     info!("cex_ws: connected, subscribed to bookTicker");
@@ -109,12 +162,7 @@ pub async fn watch_binance_price(
         apply_book_ticker(data.b.as_deref(), data.a.as_deref(), &state_cb);
     });
 
-    // Block until shutdown, then gracefully disconnect.
-    let _ = shutdown.recv().await;
-    info!("cex_ws: shutdown received, disconnecting");
-    if let Err(e) = connection.disconnect().await {
-        warn!("cex_ws: disconnect error: {}", e);
-    }
+    Ok(connection)
 }
 
 #[cfg(test)]
