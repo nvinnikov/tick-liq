@@ -744,12 +744,35 @@ async fn main() -> Result<()> {
 
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
+            // Phase 11: CEX price feed (D-01..D-07).
+            // State is shared between the Binance WS task (writer) and the on_notify
+            // closure (reader). We use std::sync::RwLock so the sync closure can read
+            // without block_in_place. The writer holds the lock only briefly and never
+            // across .await points.
+            let cex_price_state: data::cex_ws::CexPriceState =
+                std::sync::Arc::new(std::sync::RwLock::new(None));
+
+            if let Some(ref sym) = cex_symbol {
+                let sym_owned = sym.clone();
+                let state_clone = std::sync::Arc::clone(&cex_price_state);
+                let cex_shutdown = shutdown_tx.subscribe();
+                tokio::spawn(async move {
+                    data::cex_ws::watch_binance_price(sym_owned, state_clone, cex_shutdown).await;
+                });
+            }
+
             // Graceful shutdown on Ctrl+C.
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
                     let _ = shutdown_tx.send(());
                 }
             });
+
+            // Tracks whether we are currently in the stale state, to emit warn only on transitions.
+            let cex_was_stale = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cex_was_stale_closure = std::sync::Arc::clone(&cex_was_stale);
+
+            let cex_price_state_closure = std::sync::Arc::clone(&cex_price_state);
 
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
@@ -779,9 +802,40 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // SOL=9 decimals, USDC=6 decimals → multiply raw price by 10^(9-6)=1000
-                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price)
-                    * 10f64.powi(9 - 6);
+                // Phase 11: Resolve current price from CEX feed, falling back to on-chain
+                // sqrt_price when CEX data is stale (>30s) or not yet received.
+                // NOTE: tick_current_index (used by should_rebalance) is NOT affected —
+                // range-boundary checks stay on-chain per D-07 + RESEARCH Pitfall 5.
+                const CEX_STALE_SECS: u64 = 30;
+                // SOL=9 decimals, USDC=6 decimals -> multiply raw sqrt_q64 price by 10^(9-6)=1000.
+                const DECIMAL_SCALE: f64 = 1000.0;
+
+                let onchain_price =
+                    analytics::greeks::sqrt_q64_to_price(pool.sqrt_price) * DECIMAL_SCALE;
+                let price_current: f64 = {
+                    use std::sync::atomic::Ordering;
+                    let guard = cex_price_state_closure
+                        .read()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match guard.as_ref() {
+                        Some(cp) if cp.updated_at.elapsed().as_secs() < CEX_STALE_SECS => {
+                            if cex_was_stale_closure.swap(false, Ordering::SeqCst) {
+                                tracing::info!("cex_ws: price fresh again, resuming CEX feed");
+                            }
+                            cp.price
+                        }
+                        Some(_) => {
+                            if !cex_was_stale_closure.swap(true, Ordering::SeqCst) {
+                                tracing::warn!(
+                                    "cex_ws: price stale >{}s, falling back to on-chain sqrt_price",
+                                    CEX_STALE_SECS
+                                );
+                            }
+                            onchain_price
+                        }
+                        None => onchain_price,
+                    }
+                };
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
