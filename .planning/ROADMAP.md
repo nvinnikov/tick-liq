@@ -27,6 +27,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 > **Starts with one infrastructure phase (11), then research-only.** Deliverables are markdown reports, Dune queries, and data exports under `.planning/research/v1.1/`. Only Phase 11 touches `src/`.
 
 - [x] **Phase 11: CEX price feed via Binance WebSocket** — replace on-chain pool price with independent CEX feed (completed 2026-04-17)
+- [ ] **Phase 11.1: Solana SDK 2.x Migration** (URGENT — inserted) — upgrade Solana 1.18→2.x + Anchor 0.29→0.30+; closes 4 CVEs and unblocks binance-sdk v45
 - [ ] **Phase 6: Pool Census** — enumerate every LP address on the target pool with lifetime stats
 - [ ] **Phase 7: Active Maker Filter** — define maker criteria, apply to census, classify archetypes
 - [ ] **Phase 8: Maker Deep-Dive** — pick one maker, reconstruct timeline, quantify cadence/width/fees/hedging signals
@@ -42,6 +43,23 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 **Plans**: 2 plans
 - [x] 11-01-PLAN.md — Binance bookTicker WS module (src/data/cex_ws.rs) with parser, reconnect loop, shared state; unit tests
 - [x] 11-02-PLAN.md — Wire --cex-symbol CLI flag, spawn Binance task, resolve CEX-or-fallback price in watch loop; human-verify live feed
+
+### Phase 11.1: Solana SDK 2.x Migration (INSERTED — URGENT)
+**Goal**: Upgrade Solana SDK from 1.18 to 2.x and Anchor from 0.29 to 0.30+, resolving 4 outstanding CVEs in transitive deps (curve25519-dalek, ed25519-dalek, quinn-proto, ring — all ignored in `audit.toml` pending this migration) and unblocking modern Rust crates that require edition 2024 / resolver 3 — notably the official `binance-sdk` v45 that should replace the current raw tungstenite CEX feed in `src/data/cex_ws.rs`.
+**Depends on**: Phase 11 (the raw tungstenite feed to be replaced lives in Phase 11 code)
+**Requirements**: MIGRATE-01 (Solana 2.x compile), MIGRATE-02 (Anchor 0.30+ compatibility), MIGRATE-03 (all 4 CVEs resolved), MIGRATE-04 (binance-sdk v45 integrated replacing raw tungstenite)
+**Success Criteria** (what must be TRUE):
+  1. `Cargo.toml` pins `solana-client`/`solana-sdk` to `2.x` and `anchor-client`/`anchor-lang` to `0.30+`; `cargo build` and `cargo test` pass.
+  2. `audit.toml` ignore list is emptied (or reduced to only new advisories introduced by 2.x deps); `cargo audit` reports 0 vulnerabilities from the previously-ignored 4.
+  3. `src/data/cex_ws.rs` is either removed or reduced to a thin wrapper — Binance WS price feed flows through `binance-sdk` v45 APIs (book ticker stream), with `--cex-symbol` CLI behaviour unchanged.
+  4. All existing tests (350+ unit tests) still pass; live watch with `--cex-symbol SOLUSDT` produces price updates within ~5s and DB `pnl_history.price` reflects Binance mid.
+  5. Workspace uses `resolver = "3"` and `edition = "2024"` in `Cargo.toml`; no regressions in `cargo clippy -- -D warnings`.
+**Plans**: 5 plans
+- [ ] 11.1-01-PLAN.md — feat(11.1): migrate solana-sdk 1.18 → 4.x
+- [ ] 11.1-02-PLAN.md — feat(11.1): replace tokio-tungstenite CEX feed with binance-sdk v45
+- [ ] 11.1-03-PLAN.md — build(11.1): adopt edition 2024 and resolver 3
+- [ ] 11.1-04-PLAN.md — chore(11.1): clear audit.toml ignore list + manual smoke (D-18)
+- [ ] 11.1-05-PLAN.md — docs(11.1): update ROADMAP and REQUIREMENTS post-phase
 
 ### Phase 6: Pool Census
 **Goal**: Produce a complete, authoritative list of every address that has provided liquidity on pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` in the last 90 days, with per-address lifetime stats.
@@ -112,6 +130,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 | 6. Risk Limits | v1.0 | 3/3 | Complete (partial) | 2026-04-10 |
 | 7. Telegram Bot | v1.0 | 3/3 | Complete | 2026-04-10 |
 | 11. CEX price feed via Binance WebSocket | v1.1 | 2/2 | Complete    | 2026-04-17 |
+| 11.1. Solana SDK 2.x Migration | v1.1 | 0/0 | Not started (URGENT) | - |
 | 6. Pool Census | v1.1 | 0/0 | Not started | - |
 | 7. Active Maker Filter | v1.1 | 0/0 | Not started | - |
 | 8. Maker Deep-Dive | v1.1 | 0/0 | Not started | - |
