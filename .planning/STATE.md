@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Maker Strategy Research
 status: executing
-stopped_at: Phase 11 context gathered
-last_updated: "2026-04-17T12:46:10.180Z"
+stopped_at: Phase 11.1 context gathered
+last_updated: "2026-04-17T16:47:44.500Z"
 last_activity: 2026-04-17
 progress:
-  total_phases: 6
+  total_phases: 7
   completed_phases: 2
   total_plans: 5
   completed_plans: 5
@@ -68,6 +68,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 11 added: CEX price feed via Binance WebSocket
+- Phase 11.1 inserted after Phase 11: Solana SDK 1.18→2.x + Anchor 0.29→0.30+ migration (URGENT — unblocks binance-sdk v45 and closes 4 CVEs)
 
 ### Pending Todos
 
@@ -92,6 +93,6 @@ None yet (v1.1 not started).
 
 ## Session Continuity
 
-Last session: 2026-04-17T11:43:03.000Z
-Stopped at: Phase 11 context gathered
+Last session: 2026-04-17T16:47:44.496Z
+Stopped at: Phase 11.1 context gathered
 Resume command: `/gsd-plan-phase 6`
