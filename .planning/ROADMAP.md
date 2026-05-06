@@ -55,7 +55,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
   4. All existing tests (350+ unit tests) still pass; live watch with `--cex-symbol SOLUSDT` produces price updates within ~5s and DB `pnl_history.price` reflects Binance mid.
   5. Workspace uses `resolver = "3"` and `edition = "2024"` in `Cargo.toml`; no regressions in `cargo clippy -- -D warnings`.
 **Plans**: 5 plans
-- [ ] 11.1-01-PLAN.md — feat(11.1): migrate solana-sdk 1.18 → 4.x
+- [x] 11.1-01-PLAN.md — feat(11.1): migrate solana-sdk 1.18 → 4.x
 - [ ] 11.1-02-PLAN.md — feat(11.1): replace tokio-tungstenite CEX feed with binance-sdk v45
 - [ ] 11.1-03-PLAN.md — build(11.1): adopt edition 2024 and resolver 3
 - [ ] 11.1-04-PLAN.md — chore(11.1): clear audit.toml ignore list + manual smoke (D-18)
@@ -130,7 +130,7 @@ Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 | 6. Risk Limits | v1.0 | 3/3 | Complete (partial) | 2026-04-10 |
 | 7. Telegram Bot | v1.0 | 3/3 | Complete | 2026-04-10 |
 | 11. CEX price feed via Binance WebSocket | v1.1 | 2/2 | Complete    | 2026-04-17 |
-| 11.1. Solana SDK 2.x Migration | v1.1 | 0/0 | Not started (URGENT) | - |
+| 11.1. Solana SDK 2.x Migration | v1.1 | 1/5 | In Progress|  |
 | 6. Pool Census | v1.1 | 0/0 | Not started | - |
 | 7. Active Maker Filter | v1.1 | 0/0 | Not started | - |
 | 8. Maker Deep-Dive | v1.1 | 0/0 | Not started | - |
