@@ -4,8 +4,8 @@ milestone: v1.1
 milestone_name: Maker Strategy Research
 status: executing
 stopped_at: Phase 11.1 context gathered
-last_updated: "2026-04-17T17:59:25.397Z"
-last_activity: 2026-04-17 -- Phase 11.1 planning complete
+last_updated: "2026-04-17T19:52:59.880Z"
+last_activity: 2026-04-17 -- Phase 11.1 execution started
 progress:
   total_phases: 7
   completed_phases: 2
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Profitable, hands-off LP with automated rebalancing and delta hedge — verifiable in shadow before any capital is at risk.
-**Current focus:** v1.1 Maker Strategy Research — roadmap drafted, awaiting phase planning.
+**Current focus:** Phase 11.1 — migrate-solana-sdk-1-18-to-2-x-and-anchor-0-29-to-0-30-resol
 
 ## Current Position
 
-Phase: 11
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-17 -- Phase 11.1 planning complete
+Phase: 11.1 (migrate-solana-sdk-1-18-to-2-x-and-anchor-0-29-to-0-30-resol) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 11.1
+Last activity: 2026-04-17 -- Phase 11.1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
