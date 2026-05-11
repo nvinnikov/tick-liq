@@ -1,7 +1,9 @@
 [package]
 name = "tick-liq"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+resolver = "3"
+rust-version = "1.86"  # MSRV required by binance-sdk v45 (D-04)
 
 [lib]
 name = "tick_liq"
