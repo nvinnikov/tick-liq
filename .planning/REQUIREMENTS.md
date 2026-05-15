@@ -52,6 +52,15 @@
 - [ ] **SPEC-02**: Concrete rebalance policy proposal (triggers, range-width rule, cooldowns, hedging requirement yes/no) with traceability back to DEEP-* and SIZE-* evidence
 - [ ] **SPEC-03**: List of open questions / follow-up research that this milestone could not answer and that gate any future implementation work
 
+### Infrastructure Migration (MIGRATE) — Phase 11.1
+
+> **Scope redefinition:** Originally paired Solana + Anchor bumps; user decided (D-02) to take Solana 1.18 → 4.x as a single jump and treat Anchor as out-of-scope since it is not a direct dependency. Anchor will be added separately when Anchor 2.x ships under Solana 4.x and/or LIVE-02 unblocks.
+
+- [x] **MIGRATE-01**: Solana Rust stack (`solana-client`, `solana-sdk`, transitive deps) compiles on 4.x with edition 2024 + resolver 3; all 350+ unit tests pass.
+- [x] **MIGRATE-02**: Anchor scope redefined — no Anchor dependency is added in this phase. Deferred to post-v1.1 work blocked by LIVE-02.
+- [x] **MIGRATE-03**: The four historical RUSTSEC advisories (RUSTSEC-2024-0344, RUSTSEC-2022-0093, RUSTSEC-2026-0037, RUSTSEC-2025-0009) are removed from `audit.toml`; `cargo audit` exits 0 with no high/critical vulnerabilities.
+- [x] **MIGRATE-04**: `src/data/cex_ws.rs` is rewritten as a thin wrapper over `binance-sdk v45` (SpotWsStreams + BookTicker); public contract and `--cex-symbol` CLI behaviour unchanged; 5-minute live smoke confirmed Binance mid writes at ≥ 1 Hz.
+
 ---
 
 ## Future Requirements (Deferred beyond v1.1)
@@ -77,7 +86,7 @@
 
 ## Traceability
 
-Coverage: 21/21 v1.1 requirements mapped to phases 6–10. ✓
+Coverage: 25/25 v1.1 requirements mapped to phases 6–11.1. ✓ (21 research + 4 infrastructure)
 
 | REQ-ID     | Phase                                    | Status  |
 |------------|------------------------------------------|---------|
@@ -102,3 +111,7 @@ Coverage: 21/21 v1.1 requirements mapped to phases 6–10. ✓
 | SPEC-01    | Phase 10 — Strategy Specification        | Pending |
 | SPEC-02    | Phase 10 — Strategy Specification        | Pending |
 | SPEC-03    | Phase 10 — Strategy Specification        | Pending |
+| MIGRATE-01 | Phase 11.1 — Solana SDK Migration         | Complete |
+| MIGRATE-02 | Phase 11.1 — Solana SDK Migration         | Complete (scope redefined per D-02) |
+| MIGRATE-03 | Phase 11.1 — Solana SDK Migration         | Complete |
+| MIGRATE-04 | Phase 11.1 — Solana SDK Migration         | Complete |
