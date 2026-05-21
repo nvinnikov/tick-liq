@@ -51,6 +51,12 @@ impl SolanaRpc {
     /// exponential backoff (250 ms, 500 ms, 1 s).
     ///
     /// `label` appears in warning logs and the final error message.
+    ///
+    /// This method is synchronous but safe to call from within a tokio runtime:
+    /// when invoked on a multi-thread runtime worker we use
+    /// [`tokio::task::block_in_place`] + [`tokio::time::sleep`] so other tasks
+    /// continue to make progress during backoff; otherwise we fall back to
+    /// plain [`std::thread::sleep`] (sync-only caller or single-thread runtime).
     fn retry<F, T>(&self, label: &str, mut f: F) -> Result<T>
     where
         F: FnMut() -> Result<T>,
@@ -59,7 +65,7 @@ impl SolanaRpc {
         for attempt in 0..MAX_ATTEMPTS {
             if attempt > 0 {
                 let delay = RETRY_BASE * 2u32.pow(attempt - 1);
-                std::thread::sleep(delay);
+                sleep_backoff(delay);
             }
             match f() {
                 Ok(v) => return Ok(v),
@@ -170,6 +176,26 @@ impl SolanaRpc {
 
         Ok(sym)
     }
+}
+
+/// Sleep for `delay` without monopolising a tokio worker thread.
+///
+/// When called on a multi-thread tokio runtime we hop to a blocking-safe
+/// context via [`tokio::task::block_in_place`] and await
+/// [`tokio::time::sleep`], which lets other tasks (WebSocket handlers,
+/// Telegram dispatcher, …) keep running. Outside a tokio runtime, or on a
+/// current-thread runtime where `block_in_place` is unavailable, we fall
+/// back to plain [`std::thread::sleep`].
+fn sleep_backoff(delay: Duration) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            tokio::task::block_in_place(|| {
+                handle.block_on(tokio::time::sleep(delay));
+            });
+            return;
+        }
+    }
+    std::thread::sleep(delay);
 }
 
 /// Returns an error (never panics) if `actual` differs from `expected`.
