@@ -695,7 +695,7 @@ async fn main() -> Result<()> {
                 std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(None));
 
-            let _bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
+            let bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
                 match (&db_pool, &risk_monitor_opt) {
                     (Some(pg), Some(rm)) => {
                         let chat_id = bot::load_chat_id()?;
@@ -757,7 +757,7 @@ async fn main() -> Result<()> {
             let cex_price_state: data::cex_ws::CexPriceState =
                 std::sync::Arc::new(std::sync::RwLock::new(None));
 
-            let _cex_handle = if let Some(sym) = cex_symbol.as_ref() {
+            let cex_handle = if let Some(sym) = cex_symbol.as_ref() {
                 let sym_owned = sym.clone();
                 let state_clone = std::sync::Arc::clone(&cex_price_state);
                 let cex_shutdown = shutdown_tx.subscribe();
@@ -1271,6 +1271,23 @@ async fn main() -> Result<()> {
             });
 
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
+
+            // WR-03: graceful cleanup of background tasks before runtime drop.
+            // `watch_account` returns only after the shutdown broadcast fires
+            // (Ctrl+C handler) or the WS loop exits. The cex feed listens to
+            // the same shutdown channel and will terminate by itself; we just
+            // await its JoinHandle so it runs its disconnect path instead of
+            // being killed by runtime shutdown. The telegram bot dispatcher
+            // does not subscribe to the shutdown channel, so we abort() it.
+            if let Some(h) = cex_handle {
+                if let Err(e) = h.await {
+                    tracing::warn!("cex_ws: join error on shutdown: {}", e);
+                }
+            }
+            if let Some(h) = bot_handle {
+                h.abort();
+                let _ = h.await;
+            }
         }
         Commands::Depth { pool } => {
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
