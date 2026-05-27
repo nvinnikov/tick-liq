@@ -18,7 +18,16 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_ATTEMPTS: u32 = 3;
 
 /// Base delay for exponential backoff between retries.
+///
+/// Production value is 250 ms (sequence: 250 ms → 500 ms → 1 s across three
+/// attempts). Under `cfg(test)` we collapse this to zero so the sync
+/// `#[test]` functions for `retry()` do not actually sleep — the retry
+/// semantics (attempt count, early-success path, last-error propagation)
+/// are preserved, only the wall-clock backoff is skipped (WR-02).
+#[cfg(not(test))]
 const RETRY_BASE: Duration = Duration::from_millis(250);
+#[cfg(test)]
+const RETRY_BASE: Duration = Duration::from_millis(0);
 
 pub struct SolanaRpc {
     pub client: RpcClient,
