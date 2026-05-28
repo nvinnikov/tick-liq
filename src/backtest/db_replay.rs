@@ -100,7 +100,6 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     // Roll-up accumulators for the current UTC calendar day.
     let mut current_day_num: u32 = 0; // 1-based day counter across the tick stream
     let mut current_day_date = ticks[0].time.date_naive();
-    let mut day_fees_at_start: f64 = 0.0;
     let mut day_was_in_range = false;
 
     let mut day_results: Vec<DayResult> = Vec::new();
@@ -112,8 +111,10 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
         // ── Day boundary ────────────────────────────────────────────────────
         if day_date != current_day_date {
-            // Flush the completed day.
-            let day_fees = cumulative_fees - day_fees_at_start;
+            // Flush the completed day. `day_results` records `cumulative_fees`
+            // (total since start of replay); per-day fee delta was dropped as
+            // dead computation (IN-01). Restore if a future DayResult exposes
+            // daily deltas explicitly.
             let il_frac = compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper);
             let il_usd = il_frac * input.initial_value_usd;
             let net_pnl_usd = cumulative_fees + il_usd;
@@ -134,9 +135,7 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
             // Reset day accumulators.
             current_day_date = day_date;
-            day_fees_at_start = cumulative_fees;
             day_was_in_range = false;
-            let _ = day_fees; // suppress unused-variable warning
         }
 
         // Track whether this day saw any in-range tick.
