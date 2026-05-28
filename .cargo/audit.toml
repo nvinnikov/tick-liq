@@ -56,8 +56,10 @@ ignore = [
     #           tracked upstream (mersinvald/aquamarine#81 family).
     # Reason:   Build-time-only dependency (proc-macro crate); not shipped in
     #           the final binary, no runtime attack surface. Safe to defer.
-    # Expiry:   Reassess when aquamarine releases an update dropping
-    #           proc-macro-error 1.x (teloxide will follow automatically).
+    # Expiry:   Reassess at v1.2 (planned 2026-Q3 alerting-stack milestone,
+    #           which bumps teloxide past 0.13 and pulls aquamarine forward).
+    #           CI dependabot check on aquamarine >=0.6 should auto-flag
+    #           earlier if upstream drops proc-macro-error 1.x first.
     "RUSTSEC-2024-0370",
 
     # -----------------------------------------------------------------
@@ -72,7 +74,10 @@ ignore = [
     #           (no inbound traffic). PEM parsing path executes exactly once at
     #           TLS setup against the Telegram bot API endpoint - limited blast
     #           radius even if the unmaintained parser has latent issues.
-    # Expiry:   Reassess when bumping teloxide past 0.13 (planned as part of a
-    #           future milestone that revisits alerting infrastructure).
+    # Expiry:   Reassess at v1.2 (planned 2026-Q3 alerting-stack milestone;
+    #           same trigger as RUSTSEC-2024-0370 — bumping teloxide past 0.13
+    #           picks up reqwest 0.12 and rustls-pemfile 2.x in one sweep).
+    #           CI dependabot check on teloxide >=0.14 should auto-flag earlier
+    #           if upstream releases a newer major.
     "RUSTSEC-2025-0134",
 ]
