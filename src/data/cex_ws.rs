@@ -96,9 +96,18 @@ pub async fn watch_binance_price(
 
         match try_connect_and_subscribe(&symbol, &state).await {
             Ok(connection) => {
-                // Connection live; hold it until shutdown.
-                let _ = shutdown.recv().await;
-                info!("cex_ws: shutdown received, disconnecting");
+                // Connection live; hold it until shutdown. Match explicitly so
+                // a closed/lagged broadcast surfaces in logs instead of being
+                // silently swallowed by `let _ = …` (IN-03). Both variants
+                // mean "no more shutdown signals will arrive" → we proceed to
+                // disconnect and exit either way.
+                match shutdown.recv().await {
+                    Ok(()) => info!("cex_ws: shutdown received, disconnecting"),
+                    Err(e) => warn!(
+                        "cex_ws: shutdown channel closed unexpectedly: {}; disconnecting",
+                        e
+                    ),
+                }
                 if let Err(e) = connection.disconnect().await {
                     warn!("cex_ws: disconnect error: {}", e);
                 }
