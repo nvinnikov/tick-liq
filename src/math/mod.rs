@@ -5,7 +5,6 @@
 //! Orchestration that requires Solana/protocol-specific conversions lives in
 //! `crate::analytics`.
 
-pub mod amounts;
 pub mod fees;
 pub mod greeks;
 pub mod il;
