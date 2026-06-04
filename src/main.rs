@@ -540,8 +540,7 @@ async fn main() -> Result<()> {
             // compute_accrued_fees needs (global_now - global_at_watch_start) not
             // (global_now - fee_growth_inside_at_open) which would be a protocol
             // mismatch producing wrong/zero results.
-            let init_pool_data =
-                rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
+            let init_pool_data = rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
             let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
@@ -557,15 +556,18 @@ async fn main() -> Result<()> {
             // so the Bug 3 guard (which checks is_none()) will skip the pool-price fallback.
             if let Some(ep) = entry_price {
                 cache::save_entry_price(mint, *ep)?;
-                tracing::info!(entry_price = *ep, "entry price overridden via --entry-price flag");
+                tracing::info!(
+                    entry_price = *ep,
+                    "entry price overridden via --entry-price flag"
+                );
             }
 
             // ── Bug 3 fix: persist entry price on first observation ────────────
             // cache::load_entry_price returns None on first run because nothing
             // wrote the cache yet, causing IL to fall back to current price → IL=0.
             // Write it now (at watch start) so every subsequent tick can load it.
-            let entry_price_at_start = analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price)
-                * 10f64.powi(9 - 6);
+            let entry_price_at_start =
+                analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price) * 10f64.powi(9 - 6);
             if cache::load_entry_price(mint).is_none() {
                 if let Err(e) = cache::save_entry_price(mint, entry_price_at_start) {
                     tracing::warn!(error = %e, "failed to persist entry price to cache");
@@ -576,6 +578,8 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            let entry_price_for_watch =
+                cache::load_entry_price(mint).unwrap_or(entry_price_at_start);
 
             let ws_url = cli
                 .rpc_url
@@ -891,9 +895,7 @@ async fn main() -> Result<()> {
                     * price_current
                     + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
 
-                // Bug 3 fix: entry price is now guaranteed to be in cache (written at
-                // watch start above). unwrap_or fallback kept as safety net only.
-                let entry_price = cache::load_entry_price(&mint_str).unwrap_or(price_current);
+                let entry_price = entry_price_for_watch;
 
                 let amounts_result = analytics::amounts::compute_token_amounts(
                     pos.liquidity,
@@ -996,34 +998,18 @@ async fn main() -> Result<()> {
                         rm.evaluate(snap, drift_margin)
                     };
 
-                    let pg_for_persist = match db_pool.as_ref() {
-                        Some(pg) => pg.clone(),
-                        None => {
-                            tracing::warn!("risk: db_pool unexpectedly None inside risk gate, skipping persist");
-                            return;
-                        }
-                    };
-
-                    match &risk_action {
+                    let halt_tick = match &risk_action {
                         strategy::risk_monitor::RiskAction::HaltAll { drawdown_pct } => {
                             tracing::error!(
                                 drawdown_pct,
                                 pool = %pool_addr_clone,
                                 "risk: drawdown limit breached -- halting all activity"
                             );
-                            // LP position close: OrcaExecutor CPI deferred to LIVE-02.
-                            // halt_flag is already set in evaluate(); persist it now (D-11).
                             tracing::error!(
                                 pool = %pool_addr_clone,
                                 "halt: drawdown limit hit -- LP close and Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Skip rest of tick cycle (D-06): no rebalance evaluation.
-                            return;
+                            true
                         }
                         strategy::risk_monitor::RiskAction::PauseRebalancing { il_pct } => {
                             tracing::warn!(
@@ -1031,13 +1017,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL pause active -- skipping rebalance this tick"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Skip should_rebalance (D-06).
-                            return;
+                            true
                         }
                         strategy::risk_monitor::RiskAction::ResumeRebalancing { il_pct } => {
                             tracing::info!(
@@ -1045,12 +1025,7 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: IL recovered -- resuming rebalance"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Fall through to should_rebalance()
+                            false
                         }
                         strategy::risk_monitor::RiskAction::CloseDriftHedge { margin_ratio } => {
                             tracing::error!(
@@ -1058,23 +1033,24 @@ async fn main() -> Result<()> {
                                 pool = %pool_addr_clone,
                                 "risk: Drift margin below threshold -- Drift hedge close deferred (LIVE-02)"
                             );
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // LP rebalance continues (RISK-03: only Drift side affected).
-                            // Fall through to should_rebalance()
+                            false
                         }
-                        strategy::risk_monitor::RiskAction::Continue => {
-                            // Persist state (peak_pnl may have been updated).
-                            let state = risk_arc.lock().unwrap_or_else(|p| p.into_inner()).state.clone();
-                            strategy::risk_monitor::RiskMonitor::persist_state(
-                                pg_for_persist,
-                                state,
-                            );
-                            // Fall through to should_rebalance()
-                        }
+                        strategy::risk_monitor::RiskAction::Continue => false,
+                    };
+
+                    let risk_state = risk_arc
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .state
+                        .clone();
+                    if let Some(pg) = db_pool.as_ref() {
+                        strategy::risk_monitor::RiskMonitor::persist_state(pg.clone(), risk_state);
+                    } else {
+                        tracing::warn!("risk: db_pool unexpectedly None inside risk gate, skipping persist");
+                    }
+
+                    if halt_tick {
+                        return;
                     }
                 }
 
@@ -1137,10 +1113,8 @@ async fn main() -> Result<()> {
                             price: price_current,
                             simulated_fees_earned: computed_fees_earned,
                             simulated_il_usd: computed_il_usd,
-                            simulated_net_pnl: computed_fees_earned
-                                - computed_il_usd.abs(),
-                            range_width: (plan.new_tick_upper - plan.new_tick_lower)
-                                as f64,
+                            simulated_net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                            range_width: (plan.new_tick_upper - plan.new_tick_lower) as f64,
                         };
                         let chat_id = teloxide::types::ChatId(tg_chat);
 
@@ -1155,11 +1129,8 @@ async fn main() -> Result<()> {
                                 .await
                                 {
                                     Ok(rx) => {
-                                        bot::proposal::await_approval(
-                                            rx,
-                                            approve_timeout_secs_val,
-                                        )
-                                        .await
+                                        bot::proposal::await_approval(rx, approve_timeout_secs_val)
+                                            .await
                                     }
                                     Err(e) => {
                                         tracing::warn!(
