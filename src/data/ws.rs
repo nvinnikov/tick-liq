@@ -93,7 +93,7 @@ async fn run_session(
             return SessionResult::Reconnect {
                 reason: format!("connect error: {e}"),
                 connected: false,
-            }
+            };
         }
     };
 

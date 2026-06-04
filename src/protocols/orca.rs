@@ -1,5 +1,5 @@
 use crate::rpc::SolanaRpc;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use borsh::BorshDeserialize;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;

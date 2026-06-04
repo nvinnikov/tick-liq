@@ -27,11 +27,7 @@ pub type CexPriceState = Arc<RwLock<Option<CexPrice>>>;
 /// binance-sdk v45 `BookTickerResponse` exposes bid/ask as `b: Option<String>` and
 /// `a: Option<String>` (short field names — upstream mirrors the raw Binance protocol).
 /// `None` or non-numeric inputs are treated as malformed; state is left unchanged.
-fn apply_book_ticker(
-    bid: Option<&str>,
-    ask: Option<&str>,
-    state: &CexPriceState,
-) -> bool {
+fn apply_book_ticker(bid: Option<&str>, ask: Option<&str>, state: &CexPriceState) -> bool {
     let bid_str = match bid {
         Some(v) => v,
         None => {
