@@ -13,9 +13,9 @@
 //!
 //! This is an intentional, documented approximation (T-03-09 accepted risk).
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
-use crate::backtest::{price_to_tick, BacktestResult, DayResult, ParamsSnapshot};
+use crate::backtest::{BacktestResult, DayResult, ParamsSnapshot, price_to_tick};
 use crate::math::il::compute_il;
 use crate::math::sqrt_price::sqrt_q64_to_price;
 use crate::storage::tick_reader::PoolTickRow;
@@ -90,7 +90,6 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     // Roll-up accumulators for the current UTC calendar day.
     let mut current_day_num: u32 = 0; // 1-based day counter across the tick stream
     let mut current_day_date = ticks[0].time.date_naive();
-    let mut day_fees_at_start: f64 = 0.0;
     let mut day_was_in_range = false;
 
     let mut day_results: Vec<DayResult> = Vec::new();
@@ -102,8 +101,10 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
         // ── Day boundary ────────────────────────────────────────────────────
         if day_date != current_day_date {
-            // Flush the completed day.
-            let day_fees = cumulative_fees - day_fees_at_start;
+            // Flush the completed day. `day_results` records `cumulative_fees`
+            // (total since start of replay); per-day fee delta was dropped as
+            // dead computation (IN-01). Restore if a future DayResult exposes
+            // daily deltas explicitly.
             let il_frac = compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper);
             let il_usd = il_frac * input.initial_value_usd;
             let net_pnl_usd = cumulative_fees + il_usd;
@@ -124,9 +125,7 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
             // Reset day accumulators.
             current_day_date = day_date;
-            day_fees_at_start = cumulative_fees;
             day_was_in_range = false;
-            let _ = day_fees; // suppress unused-variable warning
         }
 
         // Track whether this day saw any in-range tick.
@@ -339,7 +338,7 @@ mod tests {
         let input = default_input(); // position_liquidity = 100
         let result = run_db_backtest(input, &ticks).unwrap();
 
-        let expected_fees = (100_u128 as f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (100_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-20,
             "expected fees ~{:.2e}, got {:.2e}",
@@ -360,7 +359,7 @@ mod tests {
         let result = run_db_backtest(input, &ticks).unwrap();
 
         // delta = wrapping_sub(5, u128::MAX) = 6
-        let expected_fees = (6_u128 as f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (6_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-30,
             "expected wrapping fees ~{:.2e}, got {:.2e}",

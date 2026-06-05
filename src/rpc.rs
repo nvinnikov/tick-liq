@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -18,7 +18,16 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_ATTEMPTS: u32 = 3;
 
 /// Base delay for exponential backoff between retries.
+///
+/// Production value is 250 ms (sequence: 250 ms → 500 ms → 1 s across three
+/// attempts). Under `cfg(test)` we collapse this to zero so the sync
+/// `#[test]` functions for `retry()` do not actually sleep — the retry
+/// semantics (attempt count, early-success path, last-error propagation)
+/// are preserved, only the wall-clock backoff is skipped (WR-02).
+#[cfg(not(test))]
 const RETRY_BASE: Duration = Duration::from_millis(250);
+#[cfg(test)]
+const RETRY_BASE: Duration = Duration::from_millis(0);
 
 pub struct SolanaRpc {
     pub client: RpcClient,
@@ -51,6 +60,12 @@ impl SolanaRpc {
     /// exponential backoff (250 ms, 500 ms, 1 s).
     ///
     /// `label` appears in warning logs and the final error message.
+    ///
+    /// This method is synchronous but safe to call from within a tokio runtime:
+    /// when invoked on a multi-thread runtime worker we use
+    /// [`tokio::task::block_in_place`] + [`tokio::time::sleep`] so other tasks
+    /// continue to make progress during backoff; otherwise we fall back to
+    /// plain [`std::thread::sleep`] (sync-only caller or single-thread runtime).
     fn retry<F, T>(&self, label: &str, mut f: F) -> Result<T>
     where
         F: FnMut() -> Result<T>,
@@ -59,7 +74,7 @@ impl SolanaRpc {
         for attempt in 0..MAX_ATTEMPTS {
             if attempt > 0 {
                 let delay = RETRY_BASE * 2u32.pow(attempt - 1);
-                std::thread::sleep(delay);
+                sleep_backoff(delay);
             }
             match f() {
                 Ok(v) => return Ok(v),
@@ -172,6 +187,26 @@ impl SolanaRpc {
     }
 }
 
+/// Sleep for `delay` without monopolising a tokio worker thread.
+///
+/// When called on a multi-thread tokio runtime we hop to a blocking-safe
+/// context via [`tokio::task::block_in_place`] and await
+/// [`tokio::time::sleep`], which lets other tasks (WebSocket handlers,
+/// Telegram dispatcher, …) keep running. Outside a tokio runtime, or on a
+/// current-thread runtime where `block_in_place` is unavailable, we fall
+/// back to plain [`std::thread::sleep`].
+fn sleep_backoff(delay: Duration) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            tokio::task::block_in_place(|| {
+                handle.block_on(tokio::time::sleep(delay));
+            });
+            return;
+        }
+    }
+    std::thread::sleep(delay);
+}
+
 /// Returns an error (never panics) if `actual` differs from `expected`.
 pub fn verify_owner(address: &str, actual: &Pubkey, expected: &Pubkey) -> Result<()> {
     if actual != expected {
@@ -223,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_fetch_mint_decimals_reads_correct_byte() {
-        let mut data = vec![0u8; 82]; // SPL mint is 82 bytes
+        let mut data = [0u8; 82]; // SPL mint is 82 bytes
         data[MINT_DECIMALS_OFFSET] = 9;
         assert_eq!(data[MINT_DECIMALS_OFFSET], 9);
         data[MINT_DECIMALS_OFFSET] = 6;

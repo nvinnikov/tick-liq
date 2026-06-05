@@ -4,6 +4,6 @@ pub mod slippage;
 
 #[allow(unused_imports)]
 pub use risk_monitor::{RiskAction, RiskMonitor, RiskState};
-pub use signal::{should_rebalance, RebalanceConfig, RebalanceDecision};
+pub use signal::{RebalanceConfig, RebalanceDecision, should_rebalance};
 #[allow(unused_imports)]
-pub use slippage::{check_slippage, SlippageConfig, SlippageResult};
+pub use slippage::{SlippageConfig, SlippageResult, check_slippage};

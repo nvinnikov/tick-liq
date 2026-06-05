@@ -1,6 +1,6 @@
 //! Liquidity depth analysis. Pure math lives in `crate::math::impact`.
 
-pub use crate::math::impact::{estimate_impact, LiquidityLevel};
+pub use crate::math::impact::{LiquidityLevel, estimate_impact};
 
 /// Build a bucketed liquidity distribution around the current tick from real
 /// on-chain TickArray data.

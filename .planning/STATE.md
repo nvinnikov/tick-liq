@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Maker Strategy Research
-status: Roadmap created; ready for `/gsd-plan-phase 6`
-stopped_at: Phase 11 context gathered
-last_updated: "2026-04-17T11:43:03.007Z"
-last_activity: 2026-04-15 — v1.1 roadmap written (5 phases, 6–10)
+status: executing
+stopped_at: Phase 11.1 context gathered
+last_updated: "2026-04-17T21:44:33.417Z"
+last_activity: 2026-04-17
 progress:
-  total_phases: 6
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_phases: 7
+  completed_phases: 3
+  total_plans: 10
+  completed_plans: 10
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Profitable, hands-off LP with automated rebalancing and delta hedge — verifiable in shadow before any capital is at risk.
-**Current focus:** v1.1 Maker Strategy Research — roadmap drafted, awaiting phase planning.
+**Current focus:** Phase 11.1 — migrate-solana-sdk-1-18-to-2-x-and-anchor-0-29-to-0-30-resol
 
 ## Current Position
 
-Phase: 6 (Pool Census) — not started
-Plan: —
-Status: Roadmap created; ready for `/gsd-plan-phase 6`
-Last activity: 2026-04-15 — v1.1 roadmap written (5 phases, 6–10)
+Phase: 11.1
+Plan: Not started
+Status: Executing Phase 11.1
+Last activity: 2026-04-17
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -36,7 +36,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 0
+- Total plans completed: 7
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -44,7 +44,8 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 11 | 2 | - | - |
+| 11.1 | 5 | - | - |
 
 **Recent Trend:**
 
@@ -68,6 +69,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 11 added: CEX price feed via Binance WebSocket
+- Phase 11.1 inserted after Phase 11: Solana SDK 1.18→2.x + Anchor 0.29→0.30+ migration (URGENT — unblocks binance-sdk v45 and closes 4 CVEs)
 
 ### Pending Todos
 
@@ -92,6 +94,6 @@ None yet (v1.1 not started).
 
 ## Session Continuity
 
-Last session: 2026-04-17T11:43:03.000Z
-Stopped at: Phase 11 context gathered
+Last session: 2026-04-17T16:47:44.496Z
+Stopped at: Phase 11.1 context gathered
 Resume command: `/gsd-plan-phase 6`

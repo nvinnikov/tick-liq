@@ -10,6 +10,7 @@ pub struct LiquidityLevel {
 /// Estimated price impact for a trade.
 #[derive(Debug, Clone)]
 pub struct PriceImpact {
+    #[allow(dead_code)] // Preserved in public API for inspection / future callers.
     pub target_pct: f64,
     pub target_price: f64,
     pub usd_needed: f64,

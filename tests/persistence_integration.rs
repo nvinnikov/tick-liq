@@ -12,7 +12,7 @@ use sqlx_core::query_scalar::query_scalar;
 use std::time::Instant;
 use tick_liq::storage::{
     self,
-    writer::{spawn_pnl_write, write_pnl_snapshot, write_pool_tick, PnlSnapshot, PoolTick},
+    writer::{PnlSnapshot, PoolTick, spawn_pnl_write, write_pnl_snapshot, write_pool_tick},
 };
 
 // ---------------------------------------------------------------------------

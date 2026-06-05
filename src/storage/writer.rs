@@ -239,7 +239,10 @@ impl GateStatus {
                 "shadow gate FAILED: no shadow_rebalances rows for pool {}",
                 pool_address
             ),
-            GateStatus::TooRecent { earliest, required_age_days } => format!(
+            GateStatus::TooRecent {
+                earliest,
+                required_age_days,
+            } => format!(
                 "shadow gate FAILED: earliest shadow row is {}, requires {} days of runtime before --live",
                 earliest.to_rfc3339(),
                 required_age_days
@@ -276,7 +279,7 @@ pub async fn check_shadow_gate(pool: &PgPool, pool_address: &str) -> anyhow::Res
         None => {
             return Ok(GateStatus::NoData {
                 pool_address: pool_address.to_string(),
-            })
+            });
         }
         Some(ts) => ts,
     };
@@ -330,15 +333,19 @@ mod gate_tests {
     #[test]
     fn gate_status_is_pass_predicate() {
         assert!(GateStatus::Pass.is_pass());
-        assert!(!GateStatus::NoData {
-            pool_address: "x".into()
-        }
-        .is_pass());
-        assert!(!GateStatus::TooRecent {
-            earliest: Utc::now(),
-            required_age_days: 14,
-        }
-        .is_pass());
+        assert!(
+            !GateStatus::NoData {
+                pool_address: "x".into()
+            }
+            .is_pass()
+        );
+        assert!(
+            !GateStatus::TooRecent {
+                earliest: Utc::now(),
+                required_age_days: 14,
+            }
+            .is_pass()
+        );
         assert!(!GateStatus::ErrorsPresent { count: 1 }.is_pass());
     }
 

@@ -94,6 +94,13 @@ enum Commands {
         /// cached entry price instead of using the current pool price at watch start.
         #[arg(long)]
         entry_price: Option<f64>,
+        /// CEX symbol for Binance @bookTicker price feed (e.g. SOLUSDT).
+        /// When set, Binance mid-price replaces on-chain sqrt_price for IL / P&L /
+        /// rebalance-signal P&L gate. On-chain `tick_current_index` is still used for
+        /// range-boundary checks. When absent, on-chain price is used throughout
+        /// (existing Phase 2 behavior).
+        #[arg(long)]
+        cex_symbol: Option<String>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -473,7 +480,18 @@ async fn main() -> Result<()> {
             telegram,
             approve_timeout_secs,
             entry_price,
+            cex_symbol,
         } => {
+            match &cex_symbol {
+                Some(sym) => {
+                    if sym.trim().is_empty() {
+                        anyhow::bail!("--cex-symbol must not be empty");
+                    }
+                    tracing::info!("cex_ws: Binance feed will start for {}", sym);
+                }
+                None => tracing::info!("--cex-symbol not set, using on-chain price"),
+            }
+
             // Validate risk limit flags
             if let Some(dd) = max_drawdown {
                 if *dd <= 0.0 || *dd > 100.0 {
@@ -591,14 +609,18 @@ async fn main() -> Result<()> {
                         eprintln!(
                             "ERROR: shadow gate FAILED: DATABASE_URL required for --live mode"
                         );
-                        eprintln!("Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live.");
+                        eprintln!(
+                            "Hint: set DATABASE_URL and run `cargo run -- watch` (shadow mode) to accumulate ≥14 days of zero-error data before retrying --live."
+                        );
                         std::process::exit(2);
                     }
                     Some(pg) => {
                         let status = storage::writer::check_shadow_gate(pg, &pool_addr).await?;
                         if !status.is_pass() {
                             eprintln!("ERROR: {}", status.describe());
-                            eprintln!("Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live.");
+                            eprintln!(
+                                "Hint: run `cargo run -- watch` (shadow mode) and accumulate ≥14 days of zero-error data before retrying --live."
+                            );
                             std::process::exit(2);
                         }
                         tracing::info!("shadow gate passed; entering LIVE mode");
@@ -681,7 +703,7 @@ async fn main() -> Result<()> {
                 std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(None));
 
-            let _bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
+            let bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
                 match (&db_pool, &risk_monitor_opt) {
                     (Some(pg), Some(rm)) => {
                         let chat_id = bot::load_chat_id()?;
@@ -735,12 +757,41 @@ async fn main() -> Result<()> {
 
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
+            // Phase 11: CEX price feed (D-01..D-07).
+            // State is shared between the Binance WS task (writer) and the on_notify
+            // closure (reader). We use std::sync::RwLock so the sync closure can read
+            // without block_in_place. The writer holds the lock only briefly and never
+            // across .await points.
+            let cex_price_state: data::cex_ws::CexPriceState =
+                std::sync::Arc::new(std::sync::RwLock::new(None));
+
+            let cex_handle = if let Some(sym) = cex_symbol.as_ref() {
+                let sym_owned = sym.clone();
+                let state_clone = std::sync::Arc::clone(&cex_price_state);
+                let cex_shutdown = shutdown_tx.subscribe();
+                Some(tokio::spawn(async move {
+                    data::cex_ws::watch_binance_price(sym_owned, state_clone, cex_shutdown).await;
+                    // `watch_binance_price` only returns on shutdown (broadcast
+                    // fired or channel closed), so this log fires on graceful
+                    // exit. Keep it at info! — warn! misled re-review (IN-04).
+                    tracing::info!("cex_ws: feed task exited cleanly");
+                }))
+            } else {
+                None
+            };
+
             // Graceful shutdown on Ctrl+C.
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
                     let _ = shutdown_tx.send(());
                 }
             });
+
+            // Tracks whether we are currently in the stale state, to emit warn only on transitions.
+            let cex_was_stale = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cex_was_stale_closure = std::sync::Arc::clone(&cex_was_stale);
+
+            let cex_price_state_closure = std::sync::Arc::clone(&cex_price_state);
 
             let pool_addr_clone = pool_addr.clone();
             let rpc_url = cli.rpc_url.clone();
@@ -770,9 +821,40 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // SOL=9 decimals, USDC=6 decimals → multiply raw price by 10^(9-6)=1000
-                let price_current =
-                    analytics::greeks::sqrt_q64_to_price(pool.sqrt_price) * 10f64.powi(9 - 6);
+                // Phase 11: Resolve current price from CEX feed, falling back to on-chain
+                // sqrt_price when CEX data is stale (>30s) or not yet received.
+                // NOTE: tick_current_index (used by should_rebalance) is NOT affected —
+                // range-boundary checks stay on-chain per D-07 + RESEARCH Pitfall 5.
+                const CEX_STALE_SECS: u64 = 30;
+                // SOL=9 decimals, USDC=6 decimals -> multiply raw sqrt_q64 price by 10^(9-6)=1000.
+                const DECIMAL_SCALE: f64 = 1000.0;
+
+                let onchain_price =
+                    analytics::greeks::sqrt_q64_to_price(pool.sqrt_price) * DECIMAL_SCALE;
+                let price_current: f64 = {
+                    use std::sync::atomic::Ordering;
+                    let guard = cex_price_state_closure
+                        .read()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match guard.as_ref() {
+                        Some(cp) if cp.updated_at.elapsed().as_secs() < CEX_STALE_SECS => {
+                            if cex_was_stale_closure.swap(false, Ordering::SeqCst) {
+                                tracing::info!("cex_ws: price fresh again, resuming CEX feed");
+                            }
+                            cp.price
+                        }
+                        Some(_) => {
+                            if !cex_was_stale_closure.swap(true, Ordering::SeqCst) {
+                                tracing::warn!(
+                                    "cex_ws: price stale >{}s, falling back to on-chain sqrt_price",
+                                    CEX_STALE_SECS
+                                );
+                            }
+                            onchain_price
+                        }
+                        None => onchain_price,
+                    }
+                };
                 let in_range = pool.tick_current_index >= pos.tick_lower_index
                     && pool.tick_current_index <= pos.tick_upper_index;
 
@@ -853,56 +935,57 @@ async fn main() -> Result<()> {
                 // ── Persist tick snapshot + P&L (D-05: pnl write before risk gate) ─
                 // pool_ticks write (durable) + pnl_history write (fire-and-forget).
                 // Risk gate runs immediately after these writes.
-                let snap_opt: Option<storage::writer::PnlSnapshot> = if let Some(ref pg) = db_pool {
-                    // Extract Solana slot from the accountNotification context.
-                    let slot: i64 = json
-                        .pointer("/params/result/context/slot")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
+                let snap_opt: Option<storage::writer::PnlSnapshot> =
+                    if let Some(pg) = db_pool.as_ref() {
+                        // Extract Solana slot from the accountNotification context.
+                        let slot: i64 = json
+                            .pointer("/params/result/context/slot")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
 
-                    let now = chrono::Utc::now();
+                        let now = chrono::Utc::now();
 
-                    let tick = storage::writer::PoolTick {
-                        pool_address: pool_addr_clone.clone(),
-                        slot,
-                        tick_current: pool.tick_current_index,
-                        sqrt_price: pool.sqrt_price,
-                        liquidity: pool.liquidity,
-                        fee_growth_global_a: pool.fee_growth_global_a,
-                        fee_growth_global_b: pool.fee_growth_global_b,
-                        observed_at: now,
+                        let tick = storage::writer::PoolTick {
+                            pool_address: pool_addr_clone.clone(),
+                            slot,
+                            tick_current: pool.tick_current_index,
+                            sqrt_price: pool.sqrt_price,
+                            liquidity: pool.liquidity,
+                            fee_growth_global_a: pool.fee_growth_global_a,
+                            fee_growth_global_b: pool.fee_growth_global_b,
+                            observed_at: now,
+                        };
+
+                        // Await write_pool_tick (durability checkpoint). The callback
+                        // runs inside a tokio runtime; block_in_place lets us call
+                        // block_on without violating single-threaded executor rules.
+                        let write_result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(storage::writer::write_pool_tick(pg, &tick))
+                        });
+                        if let Err(e) = write_result {
+                            tracing::warn!(error = %e, "pool_ticks write failed");
+                        }
+
+                        let snap = storage::writer::PnlSnapshot {
+                            mint: mint_str.clone(),
+                            pool_address: pool_addr_clone.clone(),
+                            fees_earned: computed_fees_earned,
+                            il_usd: computed_il_usd,
+                            net_pnl: computed_fees_earned - computed_il_usd.abs(),
+                            position_value: computed_position_value,
+                            price: price_current,
+                            observed_at: now,
+                        };
+                        // Fire-and-forget: does not block tick processing (PERSIST-03).
+                        std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
+                        Some(snap)
+                    } else {
+                        None
                     };
-
-                    // Await write_pool_tick (durability checkpoint). The callback
-                    // runs inside a tokio runtime; block_in_place lets us call
-                    // block_on without violating single-threaded executor rules.
-                    let write_result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(storage::writer::write_pool_tick(pg, &tick))
-                    });
-                    if let Err(e) = write_result {
-                        tracing::warn!(error = %e, "pool_ticks write failed");
-                    }
-
-                    let snap = storage::writer::PnlSnapshot {
-                        mint: mint_str.clone(),
-                        pool_address: pool_addr_clone.clone(),
-                        fees_earned: computed_fees_earned,
-                        il_usd: computed_il_usd,
-                        net_pnl: computed_fees_earned - computed_il_usd.abs(),
-                        position_value: computed_position_value,
-                        price: price_current,
-                        observed_at: now,
-                    };
-                    // Fire-and-forget: does not block tick processing (PERSIST-03).
-                    std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
-                    Some(snap)
-                } else {
-                    None
-                };
 
                 // ── Risk gate (D-04: every tick; D-05: after pnl_write, before should_rebalance) ──
-                if let (Some(ref snap), Some(ref risk_arc)) = (&snap_opt, &risk_monitor_opt) {
+                if let (Some(snap), Some(risk_arc)) = (&snap_opt, &risk_monitor_opt) {
                     // Fetch Drift margin ratio synchronously (D-01) via block_in_place.
                     // Returns None on RPC failure (treat as "margin OK" per D-03).
                     let drift_margin = {
@@ -965,10 +1048,13 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|p| p.into_inner())
                         .state
                         .clone();
-                    strategy::risk_monitor::RiskMonitor::persist_state(
-                        db_pool.as_ref().unwrap().clone(),
-                        risk_state,
-                    );
+                    if let Some(pg) = db_pool.as_ref() {
+                        strategy::risk_monitor::RiskMonitor::persist_state(pg.clone(), risk_state);
+                    } else {
+                        tracing::warn!(
+                            "risk: db_pool unexpectedly None inside risk gate, skipping persist"
+                        );
+                    }
 
                     if halt_tick {
                         return;
@@ -978,7 +1064,7 @@ async fn main() -> Result<()> {
                 // ── Operator pause gate (D-04) ─────────────────────────────────
                 // Check operator_pause AFTER risk gate, BEFORE should_rebalance.
                 // This is independent from IL-triggered pause_flag.
-                if let Some(ref risk_arc) = &risk_monitor_opt {
+                if let Some(risk_arc) = &risk_monitor_opt {
                     let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
                     if rm.state.operator_pause {
                         tracing::debug!(pool = %pool_addr_clone, "operator pause active -- skipping rebalance");
@@ -987,22 +1073,24 @@ async fn main() -> Result<()> {
                 }
 
                 // ── Shadow rebalance decision (SHADOW-02) ───────────────────────
-                // Wrap the full decision path so any error sets error_flag=true rather
-                // than aborting the tick callback (T-02-05).
+                // `should_rebalance` is infallible (returns `RebalanceDecision`),
+                // so there is no error path to preserve here. The earlier
+                // `Result<_, String>` wrapper was vestigial and made the
+                // `error_flag=true` branch below unreachable. If a real fallible
+                // decision path is ever introduced (e.g. catch_unwind around a
+                // panicking strategy), reintroduce the Result here and route
+                // errors into shadow_rebalances at that point.
                 let rebalance_config = strategy::RebalanceConfig::default();
-                let decision_result: Result<strategy::RebalanceDecision, String> =
-                    Ok(strategy::should_rebalance(
-                        pool.tick_current_index,
-                        pos.tick_lower_index,
-                        pos.tick_upper_index,
-                        computed_fees_earned + computed_il_usd,
-                        &rebalance_config,
-                    ));
-
-                let is_rebalance = matches!(
-                    &decision_result,
-                    Ok(strategy::RebalanceDecision::Rebalance { .. })
+                let decision = strategy::should_rebalance(
+                    pool.tick_current_index,
+                    pos.tick_lower_index,
+                    pos.tick_upper_index,
+                    computed_fees_earned + computed_il_usd,
+                    &rebalance_config,
                 );
+
+                let is_rebalance =
+                    matches!(&decision, strategy::RebalanceDecision::Rebalance { .. });
 
                 // Gate: if a rebalance plan were to be submitted, check shadow guard first.
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
@@ -1012,7 +1100,7 @@ async fn main() -> Result<()> {
                     // When --telegram is active, send a proposal message and await
                     // /approve within the configured timeout before proceeding.
                     // The callback is a sync Fn so async calls use block_in_place.
-                    if let (Some(ref tg_bot), Some(tg_chat)) = (&telegram_bot, telegram_chat_id) {
+                    if let (Some(tg_bot), Some(tg_chat)) = (&telegram_bot, telegram_chat_id) {
                         // Build plan to get range_width for the proposal message.
                         let plan = execution::build_rebalance_plan(
                             &mint_str,
@@ -1020,8 +1108,8 @@ async fn main() -> Result<()> {
                             pos.tick_upper_index,
                             pool.tick_spacing as i32,
                         );
-                        let trigger_reason = match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => reason.clone(),
+                        let trigger_reason = match &decision {
+                            strategy::RebalanceDecision::Rebalance { reason } => reason.clone(),
                             _ => "unknown".to_string(),
                         };
                         let proposal_data = bot::proposal::ProposalData {
@@ -1066,7 +1154,7 @@ async fn main() -> Result<()> {
 
                         if !approved {
                             // Log skip to DB (TG-02) and continue to next tick.
-                            if let Some(ref pg) = db_pool {
+                            if let Some(pg) = db_pool.as_ref() {
                                 let _ = tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(
                                         storage::writer::write_approval_skip(
@@ -1097,63 +1185,45 @@ async fn main() -> Result<()> {
                 }
 
                 // Build and spawn the shadow_rebalances row when a rebalance decision fires.
-                // We also write on error so the gate query in Plan 03 can count bad rows.
-                if let Some(ref pg) = db_pool {
-                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> =
-                        match &decision_result {
-                            Ok(strategy::RebalanceDecision::Rebalance { reason }) => {
-                                let plan = execution::build_rebalance_plan(
-                                    &mint_str,
-                                    pos.tick_lower_index,
-                                    pos.tick_upper_index,
-                                    pool.tick_spacing as i32,
-                                );
-                                let range_width =
-                                    (plan.new_tick_upper - plan.new_tick_lower) as f64;
-                                tracing::info!(
-                                    pool = %pool_addr_clone,
-                                    trigger = %reason,
-                                    price = price_current,
-                                    error = false,
-                                    "shadow rebalance decision"
-                                );
-                                Some(storage::writer::ShadowRebalanceRow {
-                                    pool_address: pool_addr_clone.clone(),
-                                    trigger_reason: reason.replace(' ', "_"),
-                                    price: price_current,
-                                    simulated_range_width: Some(range_width),
-                                    simulated_fees_earned: Some(computed_fees_earned),
-                                    simulated_il_usd: Some(computed_il_usd),
-                                    simulated_net_pnl: Some(
-                                        computed_fees_earned - computed_il_usd.abs(),
-                                    ),
-                                    error_flag: false,
-                                    error_message: None,
-                                })
-                            }
-                            Ok(strategy::RebalanceDecision::Hold { .. }) => {
-                                // No rebalance needed this tick — do not write a row.
-                                None
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    pool = %pool_addr_clone,
-                                    error = %e,
-                                    "shadow rebalance decision error"
-                                );
-                                Some(storage::writer::ShadowRebalanceRow {
-                                    pool_address: pool_addr_clone.clone(),
-                                    trigger_reason: "error".to_string(),
-                                    price: price_current,
-                                    simulated_range_width: None,
-                                    simulated_fees_earned: None,
-                                    simulated_il_usd: None,
-                                    simulated_net_pnl: None,
-                                    error_flag: true,
-                                    error_message: Some(e.clone()),
-                                })
-                            }
-                        };
+                // `decision` is infallible here (see block above), so no error
+                // branch writes `error_flag=true`. If a fallible path is added,
+                // restore the error arm that feeds the Plan 03 bad-row gate.
+                if let Some(pg) = db_pool.as_ref() {
+                    let shadow_row: Option<storage::writer::ShadowRebalanceRow> = match &decision {
+                        strategy::RebalanceDecision::Rebalance { reason } => {
+                            let plan = execution::build_rebalance_plan(
+                                &mint_str,
+                                pos.tick_lower_index,
+                                pos.tick_upper_index,
+                                pool.tick_spacing as i32,
+                            );
+                            let range_width = (plan.new_tick_upper - plan.new_tick_lower) as f64;
+                            tracing::info!(
+                                pool = %pool_addr_clone,
+                                trigger = %reason,
+                                price = price_current,
+                                error = false,
+                                "shadow rebalance decision"
+                            );
+                            Some(storage::writer::ShadowRebalanceRow {
+                                pool_address: pool_addr_clone.clone(),
+                                trigger_reason: reason.replace(' ', "_"),
+                                price: price_current,
+                                simulated_range_width: Some(range_width),
+                                simulated_fees_earned: Some(computed_fees_earned),
+                                simulated_il_usd: Some(computed_il_usd),
+                                simulated_net_pnl: Some(
+                                    computed_fees_earned - computed_il_usd.abs(),
+                                ),
+                                error_flag: false,
+                                error_message: None,
+                            })
+                        }
+                        strategy::RebalanceDecision::Hold { .. } => {
+                            // No rebalance needed this tick — do not write a row.
+                            None
+                        }
+                    };
 
                     if let Some(row) = shadow_row {
                         storage::writer::spawn_shadow_write(pg.clone(), row);
@@ -1162,6 +1232,23 @@ async fn main() -> Result<()> {
             });
 
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
+
+            // WR-03: graceful cleanup of background tasks before runtime drop.
+            // `watch_account` returns only after the shutdown broadcast fires
+            // (Ctrl+C handler) or the WS loop exits. The cex feed listens to
+            // the same shutdown channel and will terminate by itself; we just
+            // await its JoinHandle so it runs its disconnect path instead of
+            // being killed by runtime shutdown. The telegram bot dispatcher
+            // does not subscribe to the shutdown channel, so we abort() it.
+            if let Some(h) = cex_handle {
+                if let Err(e) = h.await {
+                    tracing::warn!("cex_ws: join error on shutdown: {}", e);
+                }
+            }
+            if let Some(h) = bot_handle {
+                h.abort();
+                let _ = h.await;
+            }
         }
         Commands::Depth { pool } => {
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);

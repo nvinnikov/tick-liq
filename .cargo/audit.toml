@@ -1,0 +1,83 @@
+# cargo audit configuration
+#
+# Phase 11.1 (MIGRATE-03) close-out: Solana 1.18 -> 4.x migration closed the 4
+# historical transitive CVEs previously suppressed here (curve25519-dalek,
+# ed25519-dalek, quinn-proto, ring). See 11.1-04-SUMMARY.md.
+#
+# Entries below MUST carry: RUSTSEC-ID + transitive source chain + severity +
+# upstream link + reason with expiry condition (D-13/D-14 in phase CONTEXT).
+
+[advisories]
+ignore = [
+    # -----------------------------------------------------------------
+    # time 0.3.45 - Denial of Service via Stack Exhaustion
+    # Source: solana-client 4.0.0-beta.7 -> solana-streamer -> x509-parser -> time
+    #         and also via asn1-rs -> time
+    # Severity: 6.8 (medium CVSS) - DoS only, no RCE/privilege escalation
+    # Upstream: https://rustsec.org/advisories/RUSTSEC-2026-0009
+    # Fix:      Upgrade time to >=0.3.47 (requires Rust 1.88.0)
+    # Reason:   Plan 03 pinned MSRV = 1.86 (D-04, required by binance-sdk v45).
+    #           time 0.3.47 transitively requires Rust 1.88, so resolver-3
+    #           MSRV-aware selection holds the crate at 0.3.45. The attack
+    #           surface is x509 certificate parsing: an attacker-controlled
+    #           malformed cert can trigger stack exhaustion. tick-liq only
+    #           connects to operator-configured Solana RPC endpoints (trusted
+    #           TLS counterparties), so realistic exploitability is low.
+    # Expiry:   Reassess once MSRV bumps to >=1.88 (tracked as post-v1.1
+    #           roadmap item) or when Solana 4.x GA drops beta.7 and its
+    #           x509-parser transitive constraint relaxes, whichever first.
+    "RUSTSEC-2026-0009",
+
+    # -----------------------------------------------------------------
+    # bincode 1.3.3 - unmaintained (upstream moved to 2.x)
+    # Source: solana-client 4.0.0-beta.7 -> solana-account-decoder ->
+    #         solana-zk-sdk / solana-transaction-status-client-types / many -> bincode 1.x
+    # Severity: info (unmaintained warning, no known CVE)
+    # Upstream: https://rustsec.org/advisories/RUSTSEC-2025-0141
+    # Fix:      Wait for Solana stack to migrate to bincode 2.x; pervasive
+    #           across dozens of solana-* crates, not locally fixable.
+    # Reason:   Unmaintained status only; no exploit pattern reported against
+    #           1.3.3. Deserialization paths in tick-liq are either borsh
+    #           (Whirlpool / Raydium pool states) or serde_json (CEX feed) -
+    #           bincode is only used by the Solana RPC client for framing
+    #           internal wire types we re-deserialize via borsh/serde at the
+    #           boundary. Tamper attempts would be caught by those parsers.
+    # Expiry:   Reassess at Solana 4.x GA (currently beta.7) - upstream is
+    #           tracking bincode 2.x adoption post-mainnet-cutover.
+    "RUSTSEC-2025-0141",
+
+    # -----------------------------------------------------------------
+    # proc-macro-error 1.0.4 - unmaintained
+    # Source: teloxide 0.13.0 -> aquamarine (proc-macro for doc diagrams) ->
+    #         proc-macro-error 1.x
+    # Severity: info (unmaintained warning, build-time macro only)
+    # Upstream: https://rustsec.org/advisories/RUSTSEC-2024-0370
+    # Fix:      Wait for aquamarine to switch to proc-macro-error2; already
+    #           tracked upstream (mersinvald/aquamarine#81 family).
+    # Reason:   Build-time-only dependency (proc-macro crate); not shipped in
+    #           the final binary, no runtime attack surface. Safe to defer.
+    # Expiry:   Reassess at v1.2 (planned 2026-Q3 alerting-stack milestone,
+    #           which bumps teloxide past 0.13 and pulls aquamarine forward).
+    #           CI dependabot check on aquamarine >=0.6 should auto-flag
+    #           earlier if upstream drops proc-macro-error 1.x first.
+    "RUSTSEC-2024-0370",
+
+    # -----------------------------------------------------------------
+    # rustls-pemfile 1.0.4 - unmaintained
+    # Source: teloxide 0.13.0 -> teloxide-core -> reqwest 0.11.27 -> rustls-pemfile
+    # Severity: info (unmaintained warning, no known CVE)
+    # Upstream: https://rustsec.org/advisories/RUSTSEC-2025-0134
+    # Fix:      Migration path is reqwest 0.12.x which pulls rustls-pemfile 2.x.
+    #           teloxide-core 0.10.1 pins reqwest 0.11.x, so local fix requires
+    #           bumping teloxide to a newer major (out of scope for Phase 11.1).
+    # Reason:   tick-liq uses teloxide for operator-side Telegram alerts only
+    #           (no inbound traffic). PEM parsing path executes exactly once at
+    #           TLS setup against the Telegram bot API endpoint - limited blast
+    #           radius even if the unmaintained parser has latent issues.
+    # Expiry:   Reassess at v1.2 (planned 2026-Q3 alerting-stack milestone;
+    #           same trigger as RUSTSEC-2024-0370 — bumping teloxide past 0.13
+    #           picks up reqwest 0.12 and rustls-pemfile 2.x in one sweep).
+    #           CI dependabot check on teloxide >=0.14 should auto-flag earlier
+    #           if upstream releases a newer major.
+    "RUSTSEC-2025-0134",
+]

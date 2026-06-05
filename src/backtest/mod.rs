@@ -245,6 +245,7 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
