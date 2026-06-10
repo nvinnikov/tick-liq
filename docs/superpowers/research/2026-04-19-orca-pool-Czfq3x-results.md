@@ -56,7 +56,31 @@ Pool is extremely active — ~456k swaps and ~$747M volume in 30 days makes this
 
 ## Q2 — Trade size distribution (7d)
 
-(Filled in Task 3.)
+**Dune query ID:** 7339637
+**Execution ID:** `01KPJMRQ61W87DEP5T53WTCPPB`
+**Credits:** 2.657
+**Sample:** 92,525 swaps over 7d (matches Q1 to within 1 swap — null amount_usd filter)
+
+### Percentiles (USD)
+| p10 | p25 | p50 (median) | p75 | p90 | p95 | p99 |
+|---|---|---|---|---|---|---|
+| $159 | $440 | **$734** | $1,090 | $2,851 | $4,586 | $10,257 |
+
+### Histogram
+| Bucket | Swaps | % of swaps | Volume USD | % of volume | Fee USD | % of fees |
+|---|---|---|---|---|---|---|
+| <$10 | 2,145 | 2.32% | $4,531 | 0.004% | $1.81 | 0.004% |
+| $10–100 | 5,094 | 5.51% | $388,312 | 0.33% | $155 | 0.33% |
+| $100–1k | 56,246 | **60.79%** | $32.79M | 27.46% | $13,117 | 27.46% |
+| **$1k–10k** | **28,063** | **30.33%** | **$68.57M** | **57.41%** | **$27,427** | **57.41%** |
+| $10k–100k | 972 | 1.05% | $16.61M | 13.91% | $6,642 | 13.91% |
+| >$100k | 5 | 0.005% | $1.07M | 0.90% | $428 | 0.90% |
+| **Total** | **92,525** | 100% | **$119.43M** | 100% | **$47,771** | 100% |
+
+### Observation
+**The $1k–$10k bucket is where the fee revenue lives**: 30% of swaps generate 57% of fees. The $100–$1k bucket is the high-frequency long tail (61% of count, 27% of fees) — these are retail/aggregator-routed trades. Sub-$100 trades (~8% of count) contribute <0.4% of fees and look like noise (arb dust, fee spam, or rounding remainders from multi-hop routes).
+
+For LP sizing the takeaway is clear: **size the position to comfortably absorb p95 trades (~$4.6k) without significant price-out-of-range risk**. Going for p99 ($10k+) is diminishing returns — the top decile of trade size only contributes ~15% of remaining fees, and the few >$100k whales are 5 trades over a week (likely AMM-aware market-making flow that doesn't ride a single LP anyway).
 
 ## Q3 — LP event activity (30d)
 
