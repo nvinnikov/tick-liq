@@ -115,7 +115,45 @@ This pool is **not run by passive retail LPs** — the increase-to-open ratio of
 
 ## Q4 — LP concentration (30d)
 
-(Filled in Task 5.)
+**Dune query ID:** 7339673
+**Execution ID:** `01KPJN8W5K93P5BAZ1D7Z8047J`
+**Credits:** 0.162
+**Output:** top 50 LPs (by `position_authority` = signer of inc/dec calls) ranked by net liquidity delta.
+
+### Top 10 LPs (net liquidity delta in raw Whirlpool L units)
+| Rank | Owner | Inc count | Dec count | Net Δ (10^12 L) | Pattern |
+|---|---|---|---|---|---|
+| 1 | `2KovWEtY69R2LsmuvEGsj9UQNFJy5paPS1hbbQZzfq9U` | 127 | 56 | **534.2** | Active whale — 2× more inflows than outflows |
+| 2 | `Dyn3TVbdtHrAjWXwQjGkdahSyC87gTdVYGAu3yAWduP`  | 2 | 0 | 151.4 | Passive whale entry (no withdraws) |
+| 3 | `KVVrxqeYE6dbX4EotCgb6eU2wYSSQxB7SJgiyyy5c3R`  | 128 | 98 | 44.1 | Pure rebalance bot (gross flow 17,300 T) |
+| 4 | `ByiAbN9MJhfQKGK5WJrfgko6XS88qqERQVRLWZTsvyTf` | 1 | 0 | 28.2 | Single-shot whale deposit |
+| 5 | `86jxR1EavkbNdRnCW6Ar7fbNA18avxs4a5dhk3ghde4h` | 106 | 41 | 26.7 | Active manager |
+| 6 | `74CkTXVFiqa12sGWFUsZUtXtWKA8AydLeYAx3PRFT5sa` | 2 | 1 | 26.2 | Mostly passive |
+| 7 | `HdHZe1MvhGSDQ32BBc6AimGpCtGjhb7295akaPVckQ3s` | **3,642** | 536 | 20.2 | High-frequency bot (~121 inc/day) |
+| 8 | `F3QqXMK8AiN8kP85fEZC9GbawLa7AvXQyZe7oTHwNgyZ` | 42 | 11 | 18.0 | |
+| 9 | `BraiVsYAraGCuGp9HBkVMngTzdHYg5Ci65WxyB72iGbn` | 69 | 54 | 15.9 | |
+| 10 | `EvjAwbehCugmFmzGHpezRg2xgExPNNVBP2UJYDWhPQTw` | 22 | 9 | 11.1 | |
+
+### Concentration metrics (rough; sums based on top-50 returned)
+- Approximate sum of net Δ across top-50: ~1,000 × 10^12 L
+- **Top 1 share: ~53%** of top-50 net liquidity contributed
+- Top 5 share: ~78%
+- Top 10 share: ~88%
+- Total distinct LPs in top-50: 50 (no truncation needed; tail is shallow)
+
+### Two LP archetypes visible in the data
+1. **Passive whales** — 1–3 increase events, 0 decreases. Likely large LPs depositing and holding through a vol regime: `Dyn3TV`, `ByiAbN`, `FAT854`, `Fvi4uceM`, `CpqykQ`, `BfVAP`, `6yFA6`, `3gVDne`, `7casjxp`.
+2. **High-churn bots** — hundreds–thousands of inc/dec events, near-zero net delta vs gross flow. Likely managed-LP services or proprietary market makers: `KVVrxq` (17,300 T gross flow), `HdHZe1` (3,642 increases), `Evga86`, `9Z6qhmZ` (1,657 events), `EYKWgg` (673 events).
+
+### Caveats
+- "Owner" = `position_authority` (signer of inc/dec). Usually equals NFT owner; differs if delegated.
+- Net delta is in **raw Whirlpool L units, not USD**. Cross-LP ranking is valid; absolute USD requires per-position tick range + current price (v2 work).
+- 30-day window only — long-term whales who didn't act in this window are invisible.
+
+### Observation
+The pool is **whale-concentrated**: a single LP holds more than half of the top-50 net liquidity additions in this window. That changes the competitive picture from "big-pool, take-modest-share" to "big-pool, top-1 LP defines the in-range liquidity floor." A small deposit from us would represent a tiny share of in-range liquidity at any given time — likely <0.1% if the dominant LP keeps similar capital deployed.
+
+However: the **active rebalancers** are interesting. `HdHZe1` is rebalancing every ~12 minutes with a position that's #7 by net contribution. That's a managed-LP service in action — and they're profitable enough to keep doing it at scale, which is the strongest possible signal that this pool is genuinely fee-generative for active rebalancers.
 
 ## Synthesis
 
