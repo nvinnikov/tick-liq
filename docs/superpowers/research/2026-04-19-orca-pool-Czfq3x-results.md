@@ -84,7 +84,34 @@ For LP sizing the takeaway is clear: **size the position to comfortably absorb p
 
 ## Q3 — LP event activity (30d)
 
-(Filled in Task 4.)
+**Dune query ID:** 7339657
+**Execution ID:** `01KPJN0P13TEEZ9MB2BMRZ0R14`
+**Credits:** 0.143
+
+### 30-day totals (2026-03-20 → 2026-04-18, excluding 4/19 partial day)
+| Event | Count | Per-day mean |
+|---|---|---|
+| Positions opened | 3,872 | ~129 |
+| Increase liquidity | 50,343 | ~1,678 |
+| Decrease liquidity | 27,717 | ~924 |
+
+### Daily ranges
+- Positions opened: 41 (3/21) – 242 (4/18)
+- Increase liquidity: 875 (3/20) – 2,554 (4/2)
+- Decrease liquidity: 407 (3/20) – 1,613 (4/16)
+
+### Activity ratios
+- **Increase / Open ≈ 13** — each new position averages 13 increase events (active scaling/rebalancing)
+- **Decrease / Open ≈ 7.2** — frequent partial withdrawals or rebalance-driven decreases
+- Combined: ~80 LP-state-changing events/hour, every hour, for 30 days straight
+
+### Caveats
+- `whirlpool_call_close_position` lacks `account_whirlpool` (close instruction doesn't reference the pool); using `decrease_liquidity` count as close-activity proxy.
+- `whirlpool_evt_liquidityrepositioned` (a newer event for atomic range reset) deferred — not all program versions emit it; would need a separate join.
+- Snake_case + camelCase variants of the decoded tables are UNION'd and de-duplicated by `(tx_id, outer_idx, inner_idx, kind)` to avoid double-counting across IDL eras.
+
+### Observation
+This pool is **not run by passive retail LPs** — the increase-to-open ratio of 13× and the per-day cadence of ~80 events/hour are unmistakable bot signatures. Likely contributors: managed LP protocols (Kamino, Marginfi, Krystal-style auto-managers) and proprietary market-making bots that rebalance ranges on every meaningful price move. Our rebalance engine has to be in the same league or our positions will be out-of-range while competitors capture the in-range fees. **The cost of being slow on this pool is high.** Conversely, this also means the pool has been validated as profitable enough that sophisticated capital is willing to play — a positive signal for entering.
 
 ## Q4 — LP concentration (30d)
 
