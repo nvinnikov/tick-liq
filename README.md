@@ -49,11 +49,15 @@ cargo build --release
 
 ## Configuration
 
-| Variable               | Default                         | Purpose |
-| ---------------------- | ------------------------------- | ------- |
-| `SOLANA_RPC_URL`       | `https://api.devnet.solana.com` | HTTP RPC. `watch` derives the WS URL automatically (`https://` → `wss://`). |
-| `DATABASE_URL`         | —                               | Postgres connection string for `db migrate`. |
-| `LP_INSPECTOR_KEYPAIR` | —                               | Base58 private key. Required by `rebalance` and `hedge` (env-only, never a file). |
+| Variable                    | Default                         | Purpose |
+| --------------------------- | ------------------------------- | ------- |
+| `SOLANA_RPC_URL`            | `https://api.devnet.solana.com` | HTTP RPC. `watch` derives the WS URL automatically (`https://` → `wss://`). |
+| `DATABASE_URL`              | —                               | Postgres connection string for `db migrate`. |
+| `LP_INSPECTOR_KEYPAIR`      | —                               | Base58 private key. Required by `rebalance` and `hedge` (env-only, never a file). |
+| `POSTGRES_PASSWORD`         | —                               | DB password for `docker compose up` (no default; compose binds Postgres to `127.0.0.1` only). Must match the password in `DATABASE_URL`. |
+| `TELEGRAM_BOT_TOKEN`        | —                               | Bot API token. Required by `watch --telegram` (env-only, never a file). |
+| `TELEGRAM_CHAT_ID`          | —                               | Authorized chat ID. Commands from any other chat are ignored. Required by `watch --telegram`. |
+| `TELEGRAM_ALLOWED_USER_IDS` | —                               | Comma-separated Telegram user IDs allowed to send commands (`/approve`, `/pause`, …). Chat membership alone is not enough. Required by `watch --telegram`. |
 
 ```bash
 export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<KEY>
