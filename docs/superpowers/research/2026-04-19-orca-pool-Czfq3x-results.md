@@ -157,4 +157,33 @@ However: the **active rebalancers** are interesting. `HdHZe1` is rebalancing eve
 
 ## Synthesis
 
-(Filled in Task 6.)
+### Pool profile
+WSOL/USDC at 4 bps is a top-tier Orca Whirlpool: ~$747M traded over 30 days (~$17M/day on a typical day, $25M including the 4/1 spike), generating ~$300k in cumulative fees ($7k/day typical). Median trade is $734; the **$1k–10k bucket carries 57% of fee revenue from only 30% of swap count** — that's the band our deposited liquidity should be sized to absorb. Sub-$100 swaps contribute <0.4% of fees and can be ignored when tuning ranges.
+
+### Competitive landscape
+The pool is **whale-concentrated** (top-1 LP ≈ 53% of top-50 net liquidity in the window) and **bot-dominated** (one address rebalances every ~12 minutes; the pool sees ~80 LP-state-changing events per hour, sustained for 30 days). Two coexisting LP archetypes: passive whales who deposit and hold, and high-churn managed-LP services / proprietary market makers. Both are profitable enough to keep doing what they're doing, which is the strongest possible signal that real fee yield is achievable here for **active** LPs. Passive deposits would be eaten by IL on this volatile pair.
+
+### Recommended next step for the LP-sizing model
+1. **Treat the $1k–$10k absorption band as the design target.** Size positions so a p95 trade ($4.6k) doesn't push the price out of range — that defines a minimum tick-range width given a deposit size, or conversely a minimum deposit given a chosen range width.
+2. **Rebalance cadence must be sub-hour.** `HdHZe1...` and similar bots reset positions every ~12 minutes. Our rebalance engine should target similar latency to compete for the same in-range fee window.
+3. **Run v2 (price-impact / share-capture) before sizing capital.** Without per-swap effective in-range liquidity, we can't translate "we'd deposit $X" into "we'd capture $Y/day in fees." This pool is large enough to be worth that follow-up work.
+4. **Don't try to outsize the dominant whale.** With top-1 contributing 5× more net L than top-2, there's no realistic capital level where we become "the" LP. The play is to be in-range at the right times, not to dominate share.
+
+### Reusing this framework for other pools
+1. Re-execute saved Dune queries with a different `pool_address` parameter (IDs: probe=7339553, Q1=7339629, Q2=7339637, Q3=7339657, Q4=7339673).
+2. Or copy the SQL from `docs/superpowers/research/dune-queries/orca-pool/` into a new Dune query and edit the parameter.
+3. Q1 supports any `days` value; Q2/Q3/Q4 default to 7/30/30 but accept any number. Cost scales linearly with days.
+4. Total cost for one pool's full v1 framework: ~17 credits (probe 4.3 + Q1 30d 7.8 + Q1 7d 2.1 + Q2 2.7 + Q3 0.14 + Q4 0.16). ~13 minutes of execution wall time.
+
+### v2 follow-up (out of scope here)
+Price-impact / market-share modeling. Requires:
+
+- Reading `sqrtPriceLimit` and per-instruction sqrt_price before/after each swap from the swap-call account context.
+- Reconstructing per-swap effective in-range liquidity (`L = Δamount / Δ√P`).
+- Back-solving "if our $X were in-range at the time of swap N, what fee would we have captured?"
+- Combining with Q4 data to compute realistic share-of-in-range-liquidity scenarios across all observed swaps.
+
+The v1 join-key extraction in Q1/Q2 (tx_id + outer/inner instruction indices) is the same shape v2 will need, so no rework there. User may build this directly.
+
+### Total framework cost
+~17 Dune credits across all queries; ~13 minutes wall clock; output is reusable for any Whirlpool pool by parameter change.
