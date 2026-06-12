@@ -4,10 +4,13 @@ services:
     container_name: tick-liq-db
     environment:
       POSTGRES_USER: tick
-      POSTGRES_PASSWORD: tick
+      # No default on purpose: this DB stores risk state (halt_flag, shadow gate)
+      # that gates --live execution, so a well-known password is not acceptable.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment or .env}
       POSTGRES_DB: tick_liq
     ports:
-      - "5432:5432"
+      # Bind to loopback only — never expose the risk-state DB to the network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

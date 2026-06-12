@@ -11,6 +11,12 @@ use tracing::warn;
 
 use crate::storage::writer::PnlSnapshot;
 
+/// Drift v2 mainnet program ID. Owner check + PDA derivation must agree on this.
+///
+/// [ASSUMED] Program ID correct as of training data; verify against official Drift docs before deployment.
+const DRIFT_PROGRAM_ID: solana_sdk::pubkey::Pubkey =
+    solana_sdk::pubkey!("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
+
 /// Persisted state for a single pool's risk monitor.
 /// Stored in DB (plan 02) and loaded at watch startup.
 #[derive(Debug, Clone)]
@@ -235,10 +241,9 @@ impl RiskMonitor {
     pub fn derive_drift_user_pda(
         authority: &solana_sdk::pubkey::Pubkey,
     ) -> solana_sdk::pubkey::Pubkey {
-        let drift_program_id = solana_sdk::pubkey!("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
         let (pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
             &[b"user", authority.as_ref(), &0u16.to_le_bytes()],
-            &drift_program_id,
+            &DRIFT_PROGRAM_ID,
         );
         pda
     }
@@ -286,8 +291,8 @@ impl RiskMonitor {
             std::time::Duration::from_secs(5),
         );
 
-        let data = match rpc.get_account_data(&pubkey) {
-            Ok(d) => d,
+        let account = match rpc.get_account(&pubkey) {
+            Ok(a) => a,
             Err(e) => {
                 warn!(
                     error = %e,
@@ -297,6 +302,20 @@ impl RiskMonitor {
                 return None;
             }
         };
+
+        // CLAUDE.md mandate: verify program owner before deserializing. Margin
+        // numbers gate live execution, so never parse an account that is not
+        // owned by the Drift program.
+        if account.owner != DRIFT_PROGRAM_ID {
+            warn!(
+                pubkey = %pubkey,
+                owner = %account.owner,
+                expected = %DRIFT_PROGRAM_ID,
+                "drift user account has wrong owner -- skipping margin check"
+            );
+            return None;
+        }
+        let data = account.data;
 
         // Anchor accounts always start with an 8-byte discriminator.
         if data.len() <= 8 {

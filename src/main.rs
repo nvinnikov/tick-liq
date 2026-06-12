@@ -699,14 +699,14 @@ async fn main() -> Result<()> {
             };
 
             // ── Telegram bot (D-01: integrated tokio task) ──────────────────────
-            let pending_approval: std::sync::Arc<
-                std::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
-            > = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let pending_approval: bot::PendingApprovalSlot =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
 
             let bot_handle: Option<tokio::task::JoinHandle<()>> = if *telegram {
                 match (&db_pool, &risk_monitor_opt) {
                     (Some(pg), Some(rm)) => {
                         let chat_id = bot::load_chat_id()?;
+                        let allowed_user_ids = bot::load_allowed_user_ids()?;
                         let bot_state = bot::BotState {
                             db_pool: pg.clone(),
                             risk_monitor: rm.clone(),
@@ -714,6 +714,7 @@ async fn main() -> Result<()> {
                             mint: mint.clone(),
                             pending_approval: pending_approval.clone(),
                             chat_id,
+                            allowed_user_ids,
                         };
                         let handle = bot::spawn_bot(bot_state).await?;
                         tracing::info!("Telegram bot started");
@@ -1123,7 +1124,7 @@ async fn main() -> Result<()> {
                         };
                         let chat_id = teloxide::types::ChatId(tg_chat);
 
-                        let approved = tokio::task::block_in_place(|| {
+                        let (approved, skip_reason) = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
                                 match bot::proposal::send_proposal(
                                     tg_bot,
@@ -1133,20 +1134,32 @@ async fn main() -> Result<()> {
                                 )
                                 .await
                                 {
-                                    Ok(rx) => {
-                                        bot::proposal::await_approval(rx, approve_timeout_secs_val)
-                                            .await
+                                    Ok((proposal_id, rx)) => {
+                                        let approved = bot::proposal::await_approval(
+                                            rx,
+                                            approve_timeout_secs_val,
+                                        )
+                                        .await;
+                                        // Remove the dead sender on timeout so a
+                                        // later /approve cannot grab it and falsely
+                                        // report execution.
+                                        bot::proposal::clear_pending(
+                                            &pending_approval,
+                                            proposal_id,
+                                        );
+                                        (approved, "timeout")
                                     }
                                     Err(e) => {
+                                        // Fail closed: human approval is the only
+                                        // manual control before a live rebalance, so
+                                        // a Telegram failure must skip the rebalance,
+                                        // never silently authorize it.
                                         tracing::warn!(
                                             error = %e,
                                             "failed to send Telegram proposal; \
-                                             skipping approval gate"
+                                             failing closed -- rebalance skipped"
                                         );
-                                        // Telegram failure: fall through to execute
-                                        // without approval so the watch loop is not
-                                        // blocked if the bot is temporarily down.
-                                        true
+                                        (false, "telegram_error")
                                     }
                                 }
                             })
@@ -1160,7 +1173,7 @@ async fn main() -> Result<()> {
                                         storage::writer::write_approval_skip(
                                             pg,
                                             &pool_addr_clone,
-                                            "timeout",
+                                            skip_reason,
                                             price_current,
                                         ),
                                     )
@@ -1168,7 +1181,8 @@ async fn main() -> Result<()> {
                             }
                             tracing::info!(
                                 pool = %pool_addr_clone,
-                                "rebalance skipped: approval timeout/rejected"
+                                reason = skip_reason,
+                                "rebalance skipped: approval not granted"
                             );
                             return;
                         }

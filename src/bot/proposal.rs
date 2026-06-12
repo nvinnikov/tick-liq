@@ -1,9 +1,15 @@
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use teloxide::prelude::*;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
+
+use super::{PendingApproval, PendingApprovalSlot};
+
+/// Monotonic proposal counter. IDs bind an `/approve <id>` to the exact
+/// proposal message the operator saw (starts at 1).
+static NEXT_PROPOSAL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Simulated outcome data sent in the proposal message.
 pub struct ProposalData {
@@ -17,9 +23,9 @@ pub struct ProposalData {
 }
 
 /// Format a proposal message for Telegram.
-fn format_proposal(data: &ProposalData) -> String {
+fn format_proposal(id: u64, data: &ProposalData) -> String {
     format!(
-        "REBALANCE PROPOSAL\n\
+        "REBALANCE PROPOSAL #{}\n\
          Pool: {}\n\
          Trigger: {}\n\
          Price: ${:.4}\n\
@@ -29,8 +35,9 @@ fn format_proposal(data: &ProposalData) -> String {
          Simulated net P&L: ${:.4}\n\
          New range width: {:.1} ticks\n\
          ---\n\
-         /approve within timeout to execute\n\
+         /approve {} within timeout to execute\n\
          Timeout = auto-skip",
+        id,
         data.pool_address,
         data.trigger_reason,
         data.price,
@@ -38,36 +45,53 @@ fn format_proposal(data: &ProposalData) -> String {
         data.simulated_il_usd,
         data.simulated_net_pnl,
         data.range_width,
+        id,
     )
 }
 
-/// Send a proposal message to the authorized chat and return a oneshot receiver.
+/// Send a proposal message to the authorized chat and return its ID plus a
+/// oneshot receiver.
 ///
-/// Installs a fresh oneshot::Sender into `pending_approval` so the /approve
-/// handler can complete it. Only one proposal can be pending at a time (D-02).
+/// Installs a fresh [`PendingApproval`] into `pending` *before* sending the
+/// message so an instant `/approve <id>` cannot race the installation. Only
+/// one proposal can be pending at a time (D-02). On send failure the slot is
+/// cleared again and the error is propagated — the caller must treat that as
+/// "not approved" (fail-closed).
 pub async fn send_proposal(
     bot: &Bot,
     chat_id: ChatId,
     data: &ProposalData,
-    pending: &Arc<Mutex<Option<oneshot::Sender<bool>>>>,
-) -> Result<oneshot::Receiver<bool>> {
-    // Drop any existing pending sender (previous proposal times out)
-    {
-        let mut lock = pending.lock().unwrap_or_else(|p| p.into_inner());
-        *lock = None;
-    }
-
-    let msg = format_proposal(data);
-    bot.send_message(chat_id, msg).await?;
-    info!(pool = %data.pool_address, "proposal sent to Telegram");
-
+    pending: &PendingApprovalSlot,
+) -> Result<(u64, oneshot::Receiver<bool>)> {
+    let id = NEXT_PROPOSAL_ID.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = oneshot::channel();
     {
         let mut lock = pending.lock().unwrap_or_else(|p| p.into_inner());
-        *lock = Some(tx);
+        // Drop any existing pending sender (previous proposal is dead).
+        *lock = Some(PendingApproval { id, tx });
     }
 
-    Ok(rx)
+    let msg = format_proposal(id, data);
+    if let Err(e) = bot.send_message(chat_id, msg).await {
+        // The operator never saw this proposal — nobody may approve it.
+        clear_pending(pending, id);
+        return Err(e.into());
+    }
+    info!(pool = %data.pool_address, proposal_id = id, "proposal sent to Telegram");
+
+    Ok((id, rx))
+}
+
+/// Remove the pending proposal with the given ID, if it is still installed.
+///
+/// Called by the watch loop after a timeout so a dead sender does not linger
+/// in the slot and swallow a later `/approve`. A different ID means a newer
+/// proposal already replaced this one — leave it alone.
+pub fn clear_pending(pending: &PendingApprovalSlot, id: u64) {
+    let mut lock = pending.lock().unwrap_or_else(|p| p.into_inner());
+    if lock.as_ref().is_some_and(|p| p.id == id) {
+        *lock = None;
+    }
 }
 
 /// Await approval with timeout. Returns true if approved, false if timed out or rejected.

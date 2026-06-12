@@ -14,8 +14,8 @@ pub enum Command {
     Resume,
     #[command(description = "24h P&L report")]
     Report,
-    #[command(description = "Approve pending rebalance")]
-    Approve,
+    #[command(description = "Approve pending rebalance: /approve <id>")]
+    Approve(String),
 }
 
 fn check_auth(msg: &Message, state: &BotState, cmd: &str) -> bool {
@@ -25,9 +25,24 @@ fn check_auth(msg: &Message, state: &BotState, cmd: &str) -> bool {
             "unauthorized {} attempt",
             cmd
         );
-        false
-    } else {
-        true
+        return false;
+    }
+    // Chat membership is not authorization: in a group any member (or an
+    // anonymous admin, where `from` is absent) could otherwise command the bot.
+    match &msg.from {
+        Some(user) if state.allowed_user_ids.contains(&user.id.0) => true,
+        Some(user) => {
+            tracing::warn!(
+                unauthorized_user = user.id.0,
+                "unauthorized {} attempt (user not in TELEGRAM_ALLOWED_USER_IDS)",
+                cmd
+            );
+            false
+        }
+        None => {
+            tracing::warn!("{} attempt without sender identity rejected", cmd);
+            false
+        }
     }
 }
 
@@ -37,7 +52,7 @@ pub fn build_handler() -> UpdateHandler<anyhow::Error> {
         .branch(case![Command::Pause].endpoint(handle_pause))
         .branch(case![Command::Resume].endpoint(handle_resume))
         .branch(case![Command::Report].endpoint(handle_report))
-        .branch(case![Command::Approve].endpoint(handle_approve));
+        .branch(case![Command::Approve(id)].endpoint(handle_approve));
 
     Update::filter_message().branch(command_handler)
 }
@@ -193,26 +208,82 @@ async fn handle_report(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
     Ok(())
 }
 
-async fn handle_approve(bot: Bot, msg: Message, state: BotState) -> anyhow::Result<()> {
+/// Outcome of matching `/approve <id>` against the pending slot under the lock.
+enum ApproveOutcome {
+    Matched(super::PendingApproval),
+    NoPending,
+    WrongId { pending_id: u64 },
+}
+
+async fn handle_approve(
+    bot: Bot,
+    msg: Message,
+    state: BotState,
+    id_arg: String,
+) -> anyhow::Result<()> {
     if !check_auth(&msg, &state, "/approve") {
         return Ok(());
     }
 
-    let sender = {
+    let requested_id: u64 = match id_arg.trim().parse() {
+        Ok(id) => id,
+        Err(_) => {
+            bot.send_message(
+                msg.chat.id,
+                "Usage: /approve <id> (the ID from the proposal message).",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let outcome = {
         let mut lock = state
             .pending_approval
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        lock.take()
+        match lock.as_ref() {
+            Some(p) if p.id == requested_id => match lock.take() {
+                Some(p) => ApproveOutcome::Matched(p),
+                None => ApproveOutcome::NoPending,
+            },
+            Some(p) => ApproveOutcome::WrongId { pending_id: p.id },
+            None => ApproveOutcome::NoPending,
+        }
     };
 
-    match sender {
-        Some(tx) => {
-            let _ = tx.send(true);
-            bot.send_message(msg.chat.id, "Approved. Executing rebalance.")
+    match outcome {
+        ApproveOutcome::Matched(pending) => {
+            // send() fails when the watch loop already timed out and dropped
+            // the receiver — never confirm execution in that case.
+            if pending.tx.send(true).is_ok() {
+                bot.send_message(
+                    msg.chat.id,
+                    format!("Approved proposal #{}. Executing rebalance.", pending.id),
+                )
                 .await?;
+            } else {
+                bot.send_message(
+                    msg.chat.id,
+                    format!(
+                        "Proposal #{} already expired. Rebalance NOT executed.",
+                        pending.id
+                    ),
+                )
+                .await?;
+            }
         }
-        None => {
+        ApproveOutcome::WrongId { pending_id } => {
+            bot.send_message(
+                msg.chat.id,
+                format!(
+                    "No proposal #{}. Pending proposal is #{} — re-check before approving.",
+                    requested_id, pending_id
+                ),
+            )
+            .await?;
+        }
+        ApproveOutcome::NoPending => {
             bot.send_message(msg.chat.id, "No pending rebalance to approve.")
                 .await?;
         }

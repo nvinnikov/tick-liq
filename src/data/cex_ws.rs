@@ -56,6 +56,16 @@ fn apply_book_ticker(bid: Option<&str>, ask: Option<&str>, state: &CexPriceState
             return false;
         }
     };
+    // `f64::parse` happily accepts "NaN"/"inf"/negatives. A NaN mid-price
+    // poisons P&L and silently disables threshold risk checks (NaN comparisons
+    // are always false), so reject anything that is not a sane quote.
+    if !(bid_f.is_finite() && ask_f.is_finite() && bid_f > 0.0 && ask_f > 0.0 && bid_f <= ask_f) {
+        warn!(
+            "cex_ws: invalid quote bid='{}' ask='{}', skipping",
+            bid_str, ask_str
+        );
+        return false;
+    }
     let mid = (bid_f + ask_f) / 2.0;
     let mut guard = state.write().unwrap_or_else(|p| p.into_inner());
     *guard = Some(CexPrice {
@@ -163,7 +173,22 @@ async fn try_connect_and_subscribe(
     info!("cex_ws: connected, subscribed to bookTicker");
 
     let state_cb = state.clone();
+    let expected_symbol = symbol.to_uppercase();
     stream.on_message(move |data: BookTickerResponse| {
+        // Don't trust SDK routing alone: a price that moves funds must come
+        // from the symbol we actually subscribed to.
+        if data
+            .s
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case(&expected_symbol))
+            != Some(true)
+        {
+            warn!(
+                "cex_ws: bookTicker for unexpected symbol {:?} (want {}), skipping",
+                data.s, expected_symbol
+            );
+            return;
+        }
         apply_book_ticker(data.b.as_deref(), data.a.as_deref(), &state_cb);
     });
 
@@ -216,6 +241,36 @@ mod tests {
         // missing ask
         let updated4 = apply_book_ticker(Some("1.0"), None, &state);
         assert!(!updated4);
+        assert!(state.read().expect("read").is_none());
+    }
+
+    #[test]
+    fn apply_book_ticker_rejects_non_finite_and_non_positive_quotes() {
+        let state: CexPriceState = Arc::new(RwLock::new(None));
+
+        // f64::parse accepts all of these — the validation layer must not.
+        for (bid, ask) in [
+            ("NaN", "100.0"),
+            ("100.0", "NaN"),
+            ("inf", "100.0"),
+            ("100.0", "inf"),
+            ("-inf", "-inf"),
+            ("-100.0", "100.0"),
+            ("100.0", "-100.0"),
+            ("0", "100.0"),
+            ("100.0", "0"),
+        ] {
+            let updated = apply_book_ticker(Some(bid), Some(ask), &state);
+            assert!(!updated, "quote bid={} ask={} must be rejected", bid, ask);
+            assert!(state.read().expect("read").is_none());
+        }
+    }
+
+    #[test]
+    fn apply_book_ticker_rejects_crossed_book() {
+        let state: CexPriceState = Arc::new(RwLock::new(None));
+        let updated = apply_book_ticker(Some("102.0"), Some("100.0"), &state);
+        assert!(!updated);
         assert!(state.read().expect("read").is_none());
     }
 }

@@ -7,6 +7,14 @@ use std::time::Duration;
 /// Metaplex Token Metadata program ID.
 const METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
+/// SPL Token program ID — valid owner for mint accounts.
+const SPL_TOKEN_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+/// SPL Token-2022 program ID — the other valid owner for mint accounts.
+const SPL_TOKEN_2022_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
 /// SPL Token mint account: decimals byte is at offset 44.
 /// Layout: mint_authority option (36) + supply (8) = 44 bytes before decimals.
 const MINT_DECIMALS_OFFSET: usize = 44;
@@ -116,6 +124,19 @@ impl SolanaRpc {
                 .get_account(mint)
                 .map_err(|e| anyhow!("Mint account '{}' not found: {}", mint, e))
         })?;
+
+        // CLAUDE.md mandate: "Always verify program owner before deserializing."
+        // A mint must be owned by SPL Token or Token-2022 (decimals offset is
+        // identical in both base layouts).
+        if account.owner != SPL_TOKEN_PROGRAM_ID && account.owner != SPL_TOKEN_2022_PROGRAM_ID {
+            return Err(anyhow!(
+                "Mint account '{}' has owner {} but expected SPL Token ({}) or Token-2022 ({})",
+                mint,
+                account.owner,
+                SPL_TOKEN_PROGRAM_ID,
+                SPL_TOKEN_2022_PROGRAM_ID
+            ));
+        }
 
         if account.data.len() <= MINT_DECIMALS_OFFSET {
             return Err(anyhow!(
