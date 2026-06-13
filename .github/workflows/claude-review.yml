@@ -22,18 +22,24 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Review ONLY the diff of this pull request. Follow the "Code Review
-            Guidelines" section in CLAUDE.md at the repository root.
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Do NOT build, compile, run tests, or run any shell command (no cargo,
-            no clippy, no git). Review statically from the diff alone — the diff is
-            already provided to you. Attempting to run tools wastes your turn budget.
+            Review this pull request following the "Code Review Guidelines"
+            section in CLAUDE.md at the repository root.
+
+            Use `gh pr diff` to read the changes. Do NOT build, compile, or run
+            tests — no cargo, no clippy. Review statically from the diff.
 
             Focus only on bugs, security issues, and performance problems. Skip
-            style and formatting nitpicks. Be concise and actionable. Post inline
-            comments on the specific lines where issues occur using your review
-            comment tools. If you find nothing worth raising, say so briefly in a
-            single summary comment instead of inventing concerns.
+            style and formatting nitpicks. Be concise and actionable.
+
+            Post findings as inline comments on the specific lines using
+            `mcp__github_inline_comment__create_inline_comment` with `confirmed: true`.
+            Use `gh pr comment` for a short top-level summary. If you find nothing
+            worth raising, post a single brief summary saying so — do not invent
+            concerns.
           claude_args: |
             --model claude-opus-4-8
             --max-turns 30
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
