@@ -68,3 +68,17 @@ Real P&L = `fees_earned - impermanent_loss`
 - `tokio` (full), `sqlx` (postgres + timescaledb), `clap` v4 (derive)
 - `anyhow`, `tracing`, `reqwest`, `tokio-tungstenite`
 - Dev: `proptest`
+
+## Code Review Guidelines
+
+These instructions govern the automated PR review (`.github/workflows/claude-review.yml`).
+
+- **Focus on bugs, security issues, and performance problems.** For this codebase, weigh:
+  - Money-handling correctness — CLMM math errors, liquidity/amount over/underflow, sign errors in IL/delta, off-by-one in tick math.
+  - Security — keypair or secret leakage, unverified program ownership before account deserialization, unchecked RPC/feed data, missing slippage/approval guards in execution paths.
+  - Performance — blocking calls in async paths, unbounded retries, N+1 RPC calls, missing connection pooling.
+  - Robustness — `unwrap()`/`expect()`/`panic!` in production paths, swallowed errors, missing reconnect on WebSocket feeds.
+- **Skip style and formatting nitpicks** — `cargo fmt` and `cargo clippy` already gate those in CI.
+- **Be concise and actionable.** State the problem, why it matters, and the fix. No filler.
+- **Post inline comments on the specific lines** where an issue occurs whenever possible; reserve the summary for cross-cutting concerns.
+- If nothing is worth raising, say so briefly — do not manufacture findings.
