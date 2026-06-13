@@ -51,4 +51,4 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Run audit
-        run: cargo audit --config audit.toml
+        run: cargo audit
