@@ -286,19 +286,51 @@ impl RiskMonitor {
         let pubkey = self.drift_user_pubkey?;
         // Skip if the limit is not configured — no point fetching.
         self.drift_min_margin_ratio?;
+        Self::fetch_drift_margin_ratio_for(&self.rpc_url, pubkey)
+    }
 
+    /// Lock-free fetch+parse used by the watch loop: the caller snapshots
+    /// `rpc_url` + `drift_user_pubkey` under the RiskMonitor mutex, releases the
+    /// guard, and only THEN calls this (the blocking RPC must not be held under
+    /// the lock the Telegram bot handlers also take). `block_in_place` it.
+    pub fn fetch_drift_margin_ratio_for(
+        rpc_url: &str,
+        pubkey: solana_sdk::pubkey::Pubkey,
+    ) -> Option<f64> {
         let rpc = solana_client::rpc_client::RpcClient::new_with_timeout(
-            self.rpc_url.clone(),
+            rpc_url.to_string(),
             std::time::Duration::from_secs(5),
         );
 
-        let account = match rpc.get_account(&pubkey) {
-            Ok(a) => a,
-            Err(e) => {
+        // Retry transient RPC errors (3 attempts, 250ms/500ms backoff) so a
+        // single blip does not silently disable the margin guard (it fails
+        // open). The caller already runs us inside block_in_place.
+        const MARGIN_FETCH_ATTEMPTS: u32 = 3;
+        let mut last_err: Option<String> = None;
+        let mut fetched = None;
+        for attempt in 0..MARGIN_FETCH_ATTEMPTS {
+            match rpc.get_account(&pubkey) {
+                Ok(a) => {
+                    fetched = Some(a);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e.to_string());
+                    if attempt + 1 < MARGIN_FETCH_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            250 * (attempt as u64 + 1),
+                        ));
+                    }
+                }
+            }
+        }
+        let account = match fetched {
+            Some(a) => a,
+            None => {
                 warn!(
-                    error = %e,
+                    error = last_err.unwrap_or_default(),
                     pubkey = %pubkey,
-                    "drift user RPC fetch failed -- margin check skipped"
+                    "drift user RPC fetch failed after retries -- margin check skipped"
                 );
                 return None;
             }

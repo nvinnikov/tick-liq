@@ -2,15 +2,21 @@
 
 /// Convert a Q64.64 sqrt_price to an `f64` price (`(sqrt_price / 2^64)^2`).
 ///
-/// The naive `value as f64 / 2^64` loses bits for any `u128` above `2^53`.
-/// To preserve precision we shift right by 32 (dropping only the lowest 32
-/// fractional bits) before the float cast, then divide by `2^32`. This keeps
-/// up to ~96 high bits of the input, which is well within `f64`'s mantissa
-/// after the subsequent square. The intermediate sqrt_p stays finite for any
-/// `u128` input including values near `u128::MAX`.
+/// Shift-before-cast, splitting the `u128` into its integer and fractional
+/// halves around the Q64.64 point so neither cast is a raw large-`u128`→`f64`:
+/// `sqrt_p = (value >> 64) + (value & (2^64-1)) / 2^64`. This keeps the full
+/// relative precision of both halves.
+///
+/// The previous implementation pre-shifted by only 32 and divided by `2^32`,
+/// which **floored** the input to multiples of `2^32` and produced up to ~50%
+/// error for very small sqrt prices (low-tick pools near MIN_TICK). Splitting
+/// at the actual Q64.64 boundary fixes that while staying finite for the whole
+/// `u128` range up to `u128::MAX`.
 pub fn sqrt_q64_to_price(sqrt_price_q64: u128) -> f64 {
-    let scaled = (sqrt_price_q64 >> 32) as f64;
-    let sqrt_p = scaled / ((1u64 << 32) as f64);
+    const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0; // 2^64
+    let int_part = (sqrt_price_q64 >> 64) as u64; // sqrt price integer part
+    let frac_part = (sqrt_price_q64 & u64::MAX as u128) as u64; // Q.64 fraction
+    let sqrt_p = int_part as f64 + frac_part as f64 / TWO_POW_64;
     sqrt_p * sqrt_p
 }
 
@@ -46,5 +52,23 @@ mod tests {
         // Hand-computed mid-range value: sqrt_price = 2 * 2^64 -> price = 4.0
         let four = sqrt_q64_to_price(2u128 << 64);
         assert!((four - 4.0).abs() / 4.0 < 1e-9, "got {four}");
+    }
+
+    #[test]
+    fn test_sqrt_q64_to_price_accurate_at_low_sqrt_price() {
+        // Regression: the old >> 32 pre-shift floored small inputs to 2^32
+        // multiples, giving ~49% error here. Direct cast must be exact to f64.
+        let q: u128 = 6_000_000_000; // ~ tick -437k, a valid low-price pool
+        let expected = (q as f64 / 18_446_744_073_709_551_616.0).powi(2);
+        let got = sqrt_q64_to_price(q);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-12,
+            "expected {expected:e}, got {got:e}"
+        );
+        // And sanity vs the closed form: ~1.058e-19.
+        assert!(
+            (got - 1.0578759e-19).abs() / 1.0578759e-19 < 1e-3,
+            "got {got:e}"
+        );
     }
 }

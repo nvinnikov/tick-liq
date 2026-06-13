@@ -30,6 +30,170 @@ fn account_data_from_notification(json: &serde_json::Value) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
+/// Resolve a position's entry price: an explicit `--entry-price` flag wins (and
+/// is cached for later runs), else the cached value, else 0.0 ("unknown", which
+/// `compute_il` treats as zero IL). Shared by `position` / `strategy check`.
+fn resolve_entry_price(mint: &str, flag: &Option<f64>) -> Result<f64> {
+    if let Some(ep) = flag {
+        cache::save_entry_price(mint, *ep)?;
+        Ok(*ep)
+    } else if let Some(ep) = cache::load_entry_price(mint) {
+        tracing::info!("Loaded cached entry price: ${:.4}", ep);
+        Ok(ep)
+    } else {
+        Ok(0.0)
+    }
+}
+
+/// Derive the Orca position PDA from its mint, then fetch + parse the position
+/// and its pool (owner-verified). Shared by every command that reads an Orca
+/// position (position / strategy check / rebalance / hedge / watch).
+fn load_orca_position_and_pool(
+    rpc: &rpc::SolanaRpc,
+    mint: &str,
+) -> Result<(
+    Pubkey,
+    protocols::orca::WhirlpoolPosition,
+    protocols::orca::WhirlpoolPool,
+)> {
+    let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
+    let mint_pubkey = Pubkey::from_str(mint)?;
+    let (position_pda, _) =
+        Pubkey::find_program_address(&[b"position", mint_pubkey.as_ref()], &whirlpool_program);
+    let position_data = rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
+    let pos = protocols::orca::parse_position(&position_data)?;
+    let pool_data = rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
+    let pool = protocols::orca::parse_pool(&pool_data)?;
+    Ok((position_pda, pos, pool))
+}
+
+/// Unit-correct P&L snapshot for an Orca position. This is the single place
+/// that converts raw sqrt prices to UI prices and computes fees / IL / value,
+/// so `position` and `strategy check` cannot drift apart on the (historically
+/// bug-prone) unit handling.
+struct OrcaPnl {
+    position_pda: Pubkey,
+    pos: protocols::orca::WhirlpoolPosition,
+    pool: protocols::orca::WhirlpoolPool,
+    decimals_a: u8,
+    decimals_b: u8,
+    price_current: f64,
+    price_lower: f64,
+    price_upper: f64,
+    in_range: bool,
+    amounts: analytics::amounts::TokenAmounts,
+    fees_usd: f64,
+    il_usd: f64,
+    position_value: f64,
+    net_pnl_usd: f64,
+}
+
+fn compute_orca_pnl(
+    rpc: &rpc::SolanaRpc,
+    mint: &str,
+    entry_price: &Option<f64>,
+) -> Result<OrcaPnl> {
+    use analytics::greeks::sqrt_q64_to_ui_price;
+    use orca_whirlpools_core::tick_index_to_sqrt_price;
+
+    let (position_pda, pos, pool) = load_orca_position_and_pool(rpc, mint)?;
+
+    let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+    let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+
+    // UI prices: decimal-adjusted so they share a unit space with --entry-price,
+    // the entry-price cache and the scaled token amounts.
+    let price_current = sqrt_q64_to_ui_price(pool.sqrt_price, decimals_a, decimals_b);
+    let price_lower = sqrt_q64_to_ui_price(
+        tick_index_to_sqrt_price(pos.tick_lower_index),
+        decimals_a,
+        decimals_b,
+    );
+    let price_upper = sqrt_q64_to_ui_price(
+        tick_index_to_sqrt_price(pos.tick_upper_index),
+        decimals_a,
+        decimals_b,
+    );
+
+    let in_range = pool.tick_current_index >= pos.tick_lower_index
+        && pool.tick_current_index <= pos.tick_upper_index;
+
+    let amounts = analytics::amounts::compute_token_amounts(
+        pos.liquidity,
+        pool.sqrt_price,
+        pos.tick_lower_index,
+        pos.tick_upper_index,
+    )?;
+
+    let scale_a = 10f64.powi(decimals_a as i32);
+    let scale_b = 10f64.powi(decimals_b as i32);
+
+    // Fees: on-chain fee_owed only. pos.fee_growth_checkpoint_* is a
+    // fee_growth_INSIDE snapshot — pairing it with fee_growth_global in
+    // compute_accrued_fees is the "Bug 2" protocol mismatch that yields garbage.
+    // A one-shot command has no session baseline, and real fee_growth_inside
+    // needs tick-array data, so the collectible owed amount is the honest figure.
+    let fees_usd =
+        pos.fee_owed_a as f64 / scale_a * price_current + pos.fee_owed_b as f64 / scale_b;
+
+    let price_entry = resolve_entry_price(mint, entry_price)?;
+    let il_fraction =
+        analytics::pnl::compute_il(price_entry, price_current, price_lower, price_upper);
+    let position_value =
+        amounts.amount_a as f64 / scale_a * price_current + amounts.amount_b as f64 / scale_b;
+    let il_usd = il_fraction * position_value;
+    let net_pnl_usd = fees_usd + il_usd;
+
+    Ok(OrcaPnl {
+        position_pda,
+        pos,
+        pool,
+        decimals_a,
+        decimals_b,
+        price_current,
+        price_lower,
+        price_upper,
+        in_range,
+        amounts,
+        fees_usd,
+        il_usd,
+        position_value,
+        net_pnl_usd,
+    })
+}
+
+/// Validate that the signing keypair is configured (presence only; real base58
+/// decoding + signing arrives in Phase 5). Shared by rebalance / hedge.
+fn require_keypair_b58() -> Result<String> {
+    let kp = std::env::var("LP_INSPECTOR_KEYPAIR").map_err(|_| {
+        anyhow::anyhow!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)")
+    })?;
+    if kp.trim().is_empty() {
+        anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
+    }
+    Ok(kp)
+}
+
+/// Flatten initialized ticks from fetched TickArrays into `(tick_index,
+/// liquidity_net)` pairs for `build_distribution`. Shared by depth / impact.
+fn extract_tick_deltas(
+    tick_arrays: &[protocols::orca::TickArray],
+    tick_spacing: u16,
+) -> Vec<(i32, i128)> {
+    let mut out = Vec::new();
+    for ta in tick_arrays {
+        for (i, tick) in ta.ticks.iter().enumerate() {
+            if tick.initialized {
+                out.push((
+                    ta.start_tick_index + (i as i32) * (tick_spacing as i32),
+                    tick.liquidity_net,
+                ));
+            }
+        }
+    }
+    out
+}
+
 #[derive(Parser)]
 #[command(name = "lp-inspect")]
 #[command(about = "CLMM position inspector for Solana")]
@@ -90,6 +254,12 @@ enum Commands {
         /// When below this, Drift hedge close is logged (CPI deferred to LIVE-02).
         #[arg(long)]
         drift_min_margin_ratio: Option<f64>,
+        /// Drift wallet authority (base58 pubkey) that owns the Drift User
+        /// account to monitor. Required to activate --drift-min-margin-ratio;
+        /// without it the margin check stays disabled (no keypair is needed —
+        /// monitoring is read-only).
+        #[arg(long)]
+        drift_authority: Option<String>,
         /// Enable Telegram bot for rebalance approvals and operator commands.
         /// Requires TELEGRAM_BOT_TOKEN env var.
         #[arg(long)]
@@ -261,124 +431,44 @@ async fn main() -> Result<()> {
 
             match protocol.as_str() {
                 "orca" => {
-                    use orca_whirlpools_core::tick_index_to_sqrt_price;
+                    let p = compute_orca_pnl(&rpc, mint, entry_price)?;
 
-                    let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
-                    let mint_pubkey = Pubkey::from_str(mint)?;
-                    let (position_pda, _) = Pubkey::find_program_address(
-                        &[b"position", mint_pubkey.as_ref()],
-                        &whirlpool_program,
-                    );
-
-                    let position_data =
-                        rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
-                    let pos = protocols::orca::parse_position(&position_data)?;
-
-                    let pool_data =
-                        rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
-                    let pool = protocols::orca::parse_pool(&pool_data)?;
-
-                    // Fetch real decimals and symbols from chain.
-                    let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
-                    let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
-                    let symbol_a = rpc.fetch_token_symbol(&pool._token_mint_a);
-                    let symbol_b = rpc.fetch_token_symbol(&pool._token_mint_b);
-
-                    // UI prices: decimal-adjusted so they share a unit space with
-                    // --entry-price, the entry-price cache and the scaled amounts.
-                    use analytics::greeks::sqrt_q64_to_ui_price;
-                    let price_current =
-                        sqrt_q64_to_ui_price(pool.sqrt_price, decimals_a, decimals_b);
-                    let price_lower = sqrt_q64_to_ui_price(
-                        tick_index_to_sqrt_price(pos.tick_lower_index),
-                        decimals_a,
-                        decimals_b,
-                    );
-                    let price_upper = sqrt_q64_to_ui_price(
-                        tick_index_to_sqrt_price(pos.tick_upper_index),
-                        decimals_a,
-                        decimals_b,
-                    );
-
-                    let in_range = pool.tick_current_index >= pos.tick_lower_index
-                        && pool.tick_current_index <= pos.tick_upper_index;
-                    let range_pct = if in_range && (price_upper - price_lower) > 0.0 {
-                        (price_current - price_lower) / (price_upper - price_lower) * 100.0
+                    // Display-only extras (not part of the shared P&L core).
+                    let symbol_a = rpc.fetch_token_symbol(&p.pool._token_mint_a);
+                    let symbol_b = rpc.fetch_token_symbol(&p.pool._token_mint_b);
+                    let range_pct = if p.in_range && (p.price_upper - p.price_lower) > 0.0 {
+                        (p.price_current - p.price_lower) / (p.price_upper - p.price_lower) * 100.0
                     } else {
                         0.0
                     };
-
-                    let amounts = analytics::amounts::compute_token_amounts(
-                        pos.liquidity,
-                        pool.sqrt_price,
-                        pos.tick_lower_index,
-                        pos.tick_upper_index,
-                    )?;
-
                     let greeks = analytics::greeks::compute_greeks(
-                        pos.liquidity,
-                        pool.sqrt_price,
-                        pos.tick_lower_index,
-                        pos.tick_upper_index,
+                        p.pos.liquidity,
+                        p.pool.sqrt_price,
+                        p.pos.tick_lower_index,
+                        p.pos.tick_upper_index,
                     );
-
-                    // Fees: report on-chain fee_owed only. pos.fee_growth_checkpoint_*
-                    // is a fee_growth_INSIDE snapshot — pairing it with
-                    // fee_growth_global in compute_accrued_fees is the "Bug 2"
-                    // protocol mismatch (see the watch arm) that yields garbage.
-                    // A one-shot command has no session baseline, and computing
-                    // real fee_growth_inside needs tick-array data, so until
-                    // that lands the collectible (possibly stale) owed amount
-                    // is the only honest figure.
-                    let scale_a = 10f64.powi(decimals_a as i32);
-                    let scale_b = 10f64.powi(decimals_b as i32);
-
-                    let fees_usd = pos.fee_owed_a as f64 / scale_a * price_current
-                        + pos.fee_owed_b as f64 / scale_b;
-
-                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
-                    let price_entry = if let Some(ep) = entry_price {
-                        cache::save_entry_price(mint, *ep)?;
-                        *ep
-                    } else if let Some(ep) = cache::load_entry_price(mint) {
-                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
-                        ep
-                    } else {
-                        0.0
-                    };
-                    let il_fraction = analytics::pnl::compute_il(
-                        price_entry,
-                        price_current,
-                        price_lower,
-                        price_upper,
-                    );
-                    let position_value = amounts.amount_a as f64 / scale_a * price_current
-                        + amounts.amount_b as f64 / scale_b;
-                    let il_usd = il_fraction * position_value;
-
-                    let pnl = analytics::pnl::PnlResult {
-                        fees_usd,
-                        il_usd,
-                        net_usd: fees_usd + il_usd,
-                        initial_value_usd: position_value,
-                    };
 
                     let summary = display::table::PositionSummary {
                         protocol: "Orca".to_string(),
-                        pool_address: pos.whirlpool.to_string(),
-                        fee_rate_bps: pool.fee_rate as f64 / 100.0,
-                        price_lower,
-                        price_upper,
-                        price_current,
-                        in_range,
+                        pool_address: p.pos.whirlpool.to_string(),
+                        fee_rate_bps: p.pool.fee_rate as f64 / 100.0,
+                        price_lower: p.price_lower,
+                        price_upper: p.price_upper,
+                        price_current: p.price_current,
+                        in_range: p.in_range,
                         range_pct,
-                        amounts,
-                        decimals_a,
-                        decimals_b,
+                        decimals_a: p.decimals_a,
+                        decimals_b: p.decimals_b,
                         symbol_a,
                         symbol_b,
-                        pnl,
+                        pnl: analytics::pnl::PnlResult {
+                            fees_usd: p.fees_usd,
+                            il_usd: p.il_usd,
+                            net_usd: p.net_pnl_usd,
+                            initial_value_usd: p.position_value,
+                        },
                         greeks,
+                        amounts: p.amounts,
                     };
 
                     display::table::print_position(&summary);
@@ -446,16 +536,7 @@ async fn main() -> Result<()> {
                     // TODO: Raydium fee tracking not yet wired (fee_growth_global not in pool struct)
                     let fees_usd = 0.0_f64;
 
-                    // Resolve entry price: CLI flag takes precedence, then cache, then 0.
-                    let price_entry = if let Some(ep) = entry_price {
-                        cache::save_entry_price(mint, *ep)?;
-                        *ep
-                    } else if let Some(ep) = cache::load_entry_price(mint) {
-                        tracing::info!("Loaded cached entry price: ${:.4}", ep);
-                        ep
-                    } else {
-                        0.0
-                    };
+                    let price_entry = resolve_entry_price(mint, entry_price)?;
                     let il_fraction = analytics::pnl::compute_il(
                         price_entry,
                         price_current,
@@ -507,6 +588,7 @@ async fn main() -> Result<()> {
             max_drawdown,
             max_il,
             drift_min_margin_ratio,
+            drift_authority,
             telegram,
             approve_timeout_secs,
             entry_price,
@@ -539,6 +621,35 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Resolve the Drift User PDA from the operator-supplied wallet
+            // authority. Read-only monitoring, so no keypair is required; the
+            // margin check only runs when BOTH a threshold and an authority are
+            // given. --drift-authority without a threshold (or vice versa) is a
+            // misconfiguration worth failing fast on.
+            let drift_user_pubkey: Option<solana_sdk::pubkey::Pubkey> = match drift_authority {
+                Some(auth) => {
+                    let authority = Pubkey::from_str(auth).map_err(|e| {
+                        anyhow::anyhow!("--drift-authority is not a valid pubkey: {}", e)
+                    })?;
+                    if drift_min_margin_ratio.is_none() {
+                        anyhow::bail!(
+                            "--drift-authority requires --drift-min-margin-ratio to be set"
+                        );
+                    }
+                    Some(strategy::risk_monitor::RiskMonitor::derive_drift_user_pda(
+                        &authority,
+                    ))
+                }
+                None => {
+                    if drift_min_margin_ratio.is_some() {
+                        tracing::warn!(
+                            "--drift-min-margin-ratio set without --drift-authority -- Drift margin check is DISABLED (no account to read)"
+                        );
+                    }
+                    None
+                }
+            };
+
             let max_drawdown_val: Option<f64> = *max_drawdown;
             let max_il_val: Option<f64> = *max_il;
             let drift_min_margin_ratio_val: Option<f64> = *drift_min_margin_ratio;
@@ -551,24 +662,16 @@ async fn main() -> Result<()> {
             };
             tracing::info!(mode = ?guard, "watch starting");
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
+            // Whirlpool program id is also needed later for the per-tick pool /
+            // position refetch inside the processor task.
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
-            let mint_pubkey = Pubkey::from_str(mint)?;
-            let (position_pda, _) = Pubkey::find_program_address(
-                &[b"position", mint_pubkey.as_ref()],
-                &whirlpool_program,
-            );
-
-            let position_data =
-                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
-            let pos = protocols::orca::parse_position(&position_data)?;
+            let (position_pda, pos, init_pool) = load_orca_position_and_pool(&rpc, mint)?;
             let pool_addr = pos.whirlpool.to_string();
 
             // ── Bug 2 fix: record fee_growth_global baselines at watch start ──
             // compute_accrued_fees needs (global_now - global_at_watch_start) not
             // (global_now - fee_growth_inside_at_open) which would be a protocol
             // mismatch producing wrong/zero results.
-            let init_pool_data = rpc.fetch_account_checked(&pool_addr, &whirlpool_program)?;
-            let init_pool = protocols::orca::parse_pool(&init_pool_data)?;
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
 
@@ -709,10 +812,8 @@ async fn main() -> Result<()> {
                         "risk: session reset -- peak_pnl/drawdown cleared (halt_flag preserved)"
                     );
 
-                    // Derive Drift User PDA from keypair if available (for RISK-03).
-                    // In shadow mode (no keypair), drift_user_pubkey = None -> Drift check skipped.
-                    let drift_user_pubkey: Option<solana_sdk::pubkey::Pubkey> = None;
-
+                    // Drift User PDA resolved above from --drift-authority (read-only
+                    // monitoring; None disables the per-tick margin check).
                     let monitor = strategy::risk_monitor::RiskMonitor::new(
                         risk_state,
                         max_drawdown_val,
@@ -1087,16 +1188,22 @@ async fn main() -> Result<()> {
 
                 // ── Risk gate (D-04: every tick; D-05: after pnl_write, before should_rebalance) ──
                 if let (Some(snap), Some(risk_arc)) = (&snap_opt, &risk_monitor_opt) {
-                    // Fetch Drift margin ratio synchronously (D-01) via block_in_place.
+                    // Fetch Drift margin ratio synchronously (D-01). Snapshot the
+                    // inputs under the lock and RELEASE it before the blocking
+                    // RPC, so a slow/retrying Drift fetch can't stall the
+                    // Telegram bot handlers that lock the same RiskMonitor mutex.
                     // Returns None on RPC failure (treat as "margin OK" per D-03).
-                    let drift_margin = {
+                    let drift_inputs = {
                         let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
-                        // Only fetch if both pubkey and threshold are configured.
-                        if rm.drift_user_pubkey.is_some() {
-                            tokio::task::block_in_place(|| rm.fetch_drift_margin_ratio())
-                        } else {
-                            None
-                        }
+                        rm.drift_user_pubkey.map(|pk| (rm.rpc_url.clone(), pk))
+                    };
+                    let drift_margin = match drift_inputs {
+                        Some((url, pk)) => tokio::task::block_in_place(|| {
+                            strategy::risk_monitor::RiskMonitor::fetch_drift_margin_ratio_for(
+                                &url, pk,
+                            )
+                        }),
+                        None => None,
                     };
 
                     // Durable fields before evaluate — used to debounce persist.
@@ -1470,16 +1577,7 @@ async fn main() -> Result<()> {
                 pool_state.tick_spacing,
             )?;
 
-            let mut tick_deltas: Vec<(i32, i128)> = Vec::new();
-            for ta in &tick_arrays {
-                for (i, tick) in ta.ticks.iter().enumerate() {
-                    if tick.initialized {
-                        let tick_index =
-                            ta.start_tick_index + (i as i32) * (pool_state.tick_spacing as i32);
-                        tick_deltas.push((tick_index, tick.liquidity_net));
-                    }
-                }
-            }
+            let tick_deltas = extract_tick_deltas(&tick_arrays, pool_state.tick_spacing);
 
             println!();
             println!(
@@ -1530,17 +1628,7 @@ async fn main() -> Result<()> {
 
             let (target_price, impact_pct) = match tick_arrays_result {
                 Ok(tick_arrays) => {
-                    // Build tick delta list from fetched arrays.
-                    let mut tick_deltas: Vec<(i32, i128)> = Vec::new();
-                    for ta in &tick_arrays {
-                        for (i, tick) in ta.ticks.iter().enumerate() {
-                            if tick.initialized {
-                                let tick_index = ta.start_tick_index
-                                    + (i as i32) * (pool_state.tick_spacing as i32);
-                                tick_deltas.push((tick_index, tick.liquidity_net));
-                            }
-                        }
-                    }
+                    let tick_deltas = extract_tick_deltas(&tick_arrays, pool_state.tick_spacing);
 
                     // Build distribution around current tick (16 buckets each side).
                     let distribution = analytics::depth::build_distribution(
@@ -1640,80 +1728,9 @@ async fn main() -> Result<()> {
                 min_pnl,
                 entry_price,
             } => {
-                use orca_whirlpools_core::tick_index_to_sqrt_price;
-
                 let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
-                let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
-                let mint_pubkey = Pubkey::from_str(mint)?;
-                let (position_pda, _) = Pubkey::find_program_address(
-                    &[b"position", mint_pubkey.as_ref()],
-                    &whirlpool_program,
-                );
-
-                let position_data =
-                    rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
-                let pos = protocols::orca::parse_position(&position_data)?;
-
-                let pool_data =
-                    rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
-                let pool = protocols::orca::parse_pool(&pool_data)?;
-
-                let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
-                let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
-
-                // UI prices: same unit space as --entry-price and the cache.
-                let price_current = analytics::greeks::sqrt_q64_to_ui_price(
-                    pool.sqrt_price,
-                    decimals_a,
-                    decimals_b,
-                );
-                let price_lower = analytics::greeks::sqrt_q64_to_ui_price(
-                    tick_index_to_sqrt_price(pos.tick_lower_index),
-                    decimals_a,
-                    decimals_b,
-                );
-                let price_upper = analytics::greeks::sqrt_q64_to_ui_price(
-                    tick_index_to_sqrt_price(pos.tick_upper_index),
-                    decimals_a,
-                    decimals_b,
-                );
-
-                let amounts = analytics::amounts::compute_token_amounts(
-                    pos.liquidity,
-                    pool.sqrt_price,
-                    pos.tick_lower_index,
-                    pos.tick_upper_index,
-                )?;
-
-                // fee_owed only — pairing fee_growth_checkpoint_* (an INSIDE
-                // snapshot) with fee_growth_global is the "Bug 2" protocol
-                // mismatch; see the position arm for the full rationale.
-                let scale_a = 10f64.powi(decimals_a as i32);
-                let scale_b = 10f64.powi(decimals_b as i32);
-
-                let fees_usd = pos.fee_owed_a as f64 / scale_a * price_current
-                    + pos.fee_owed_b as f64 / scale_b;
-
-                // Resolve entry price: CLI flag takes precedence, then cache, then 0.
-                let price_entry = if let Some(ep) = entry_price {
-                    cache::save_entry_price(mint, *ep)?;
-                    *ep
-                } else if let Some(ep) = cache::load_entry_price(mint) {
-                    tracing::info!("Loaded cached entry price: ${:.4}", ep);
-                    ep
-                } else {
-                    0.0
-                };
-                let il_fraction = analytics::pnl::compute_il(
-                    price_entry,
-                    price_current,
-                    price_lower,
-                    price_upper,
-                );
-                let position_value = amounts.amount_a as f64 / scale_a * price_current
-                    + amounts.amount_b as f64 / scale_b;
-                let il_usd = il_fraction * position_value;
-                let net_pnl_usd = fees_usd + il_usd;
+                // Same unit-correct P&L core as the `position` command.
+                let p = compute_orca_pnl(&rpc, mint, entry_price)?;
 
                 let config = strategy::RebalanceConfig {
                     rebalance_out_of_range: true,
@@ -1722,20 +1739,20 @@ async fn main() -> Result<()> {
                 };
 
                 let decision = strategy::should_rebalance(
-                    pool.tick_current_index,
-                    pos.tick_lower_index,
-                    pos.tick_upper_index,
-                    net_pnl_usd,
+                    p.pool.tick_current_index,
+                    p.pos.tick_lower_index,
+                    p.pos.tick_upper_index,
+                    p.net_pnl_usd,
                     &config,
                 );
 
-                println!("Position:     {}", position_pda);
-                println!("Tick current: {}", pool.tick_current_index);
+                println!("Position:     {}", p.position_pda);
+                println!("Tick current: {}", p.pool.tick_current_index);
                 println!(
                     "Range:        [{}, {}]",
-                    pos.tick_lower_index, pos.tick_upper_index
+                    p.pos.tick_lower_index, p.pos.tick_upper_index
                 );
-                println!("Net P&L:      ${:.2}", net_pnl_usd);
+                println!("Net P&L:      ${:.2}", p.net_pnl_usd);
                 match decision {
                     strategy::RebalanceDecision::Hold { reason } => {
                         println!("Decision:     HOLD ({})", reason);
@@ -1761,30 +1778,10 @@ async fn main() -> Result<()> {
             if !*dry_run {
                 anyhow::bail!("Only --dry-run is supported");
             }
-            let keypair_b58 = std::env::var("LP_INSPECTOR_KEYPAIR").map_err(|_| {
-                anyhow::anyhow!(
-                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
-                )
-            })?;
-            if keypair_b58.trim().is_empty() {
-                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
-            }
+            require_keypair_b58()?;
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
-            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
-            let mint_pubkey = Pubkey::from_str(mint)?;
-            let (position_pda, _) = Pubkey::find_program_address(
-                &[b"position", mint_pubkey.as_ref()],
-                &whirlpool_program,
-            );
-
-            let position_data =
-                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
-            let pos = protocols::orca::parse_position(&position_data)?;
-
-            let pool_data =
-                rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
-            let pool = protocols::orca::parse_pool(&pool_data)?;
+            let (_position_pda, pos, pool) = load_orca_position_and_pool(&rpc, mint)?;
 
             let plan = execution::build_rebalance_plan(
                 mint,
@@ -1901,30 +1898,10 @@ async fn main() -> Result<()> {
             if !*dry_run {
                 anyhow::bail!("Only --dry-run is supported");
             }
-            let keypair_b58 = std::env::var("LP_INSPECTOR_KEYPAIR").map_err(|_| {
-                anyhow::anyhow!(
-                    "LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)"
-                )
-            })?;
-            if keypair_b58.trim().is_empty() {
-                anyhow::bail!("LP_INSPECTOR_KEYPAIR env var not set (base58 private key required)");
-            }
+            require_keypair_b58()?;
 
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
-            let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
-            let mint_pubkey = Pubkey::from_str(mint)?;
-            let (position_pda, _) = Pubkey::find_program_address(
-                &[b"position", mint_pubkey.as_ref()],
-                &whirlpool_program,
-            );
-
-            let position_data =
-                rpc.fetch_account_checked(&position_pda.to_string(), &whirlpool_program)?;
-            let pos = protocols::orca::parse_position(&position_data)?;
-
-            let pool_data =
-                rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
-            let pool = protocols::orca::parse_pool(&pool_data)?;
+            let (_position_pda, pos, pool) = load_orca_position_and_pool(&rpc, mint)?;
 
             // The LP's delta-hedgeable exposure is its token-A leg: the
             // position holds `amount_a` of the volatile token, so the

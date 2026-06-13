@@ -15,10 +15,14 @@ Pure CLMM math. These rules apply **in addition to** the root `CLAUDE.md`
 
 ## Fixed-point precision (Q64.64)
 
-- sqrt_price is Q64.64 (`u128`). 🔴 Never write `value as f64 / 2^64` directly:
-  it loses bits for any input above `2^53`. The established pattern is
-  shift-before-cast (`>> 32` then `/ 2^32`, see `sqrt_price.rs`). Flag new
-  conversions that cast a large `u128` straight to `f64`.
+- sqrt_price is Q64.64 (`u128`). 🔴 Never cast a large `u128` straight to `f64`
+  (`value as f64 / 2^64`) — it floors/loses low bits. The established pattern is
+  shift-before-cast: split at the Q64.64 point into integer and fractional
+  halves and cast each `u64` separately —
+  `(value >> 64) as f64 + (value & u64::MAX) as f64 / 2^64` (see
+  `sqrt_q64_to_price` in `sqrt_price.rs`). This keeps full relative precision
+  across the whole range, including very small sqrt prices. Flag new conversions
+  that cast a large `u128` straight to `f64`.
 - Conversions must stay finite for the full `u128` range up to `u128::MAX`.
 
 ## Unit-space discipline (the BUG-qr9 class)
