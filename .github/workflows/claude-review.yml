@@ -1,0 +1,34 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    name: Review PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review the diff of this pull request following the "Code Review Guidelines"
+            section in CLAUDE.md at the repository root.
+
+            Focus only on bugs, security issues, and performance problems. Skip
+            style and formatting nitpicks. Be concise and actionable. Post inline
+            comments on the specific lines where issues occur. If you find nothing
+            worth raising, say so briefly instead of inventing concerns.
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 15
