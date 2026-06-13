@@ -22,13 +22,18 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Review the diff of this pull request following the "Code Review Guidelines"
-            section in CLAUDE.md at the repository root.
+            Review ONLY the diff of this pull request. Follow the "Code Review
+            Guidelines" section in CLAUDE.md at the repository root.
+
+            Do NOT build, compile, run tests, or run any shell command (no cargo,
+            no clippy, no git). Review statically from the diff alone — the diff is
+            already provided to you. Attempting to run tools wastes your turn budget.
 
             Focus only on bugs, security issues, and performance problems. Skip
             style and formatting nitpicks. Be concise and actionable. Post inline
-            comments on the specific lines where issues occur. If you find nothing
-            worth raising, say so briefly instead of inventing concerns.
+            comments on the specific lines where issues occur using your review
+            comment tools. If you find nothing worth raising, say so briefly in a
+            single summary comment instead of inventing concerns.
           claude_args: |
             --model claude-opus-4-8
-            --max-turns 15
+            --max-turns 30
