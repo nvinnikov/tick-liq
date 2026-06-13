@@ -101,4 +101,8 @@ Anything that would be a style/formatting nit: do not post it. `cargo fmt` and `
 - *Balanced* (default) — 🔴 + 🟡, medium+ confidence.
 - *Exhaustive* — broad coverage including lower-confidence/edge findings; more comments, more false positives.
 
+**Path-scoped rules.** The money paths carry stricter, code-specific rules in their own files — apply them on top of the above when a PR touches them:
+- `src/math/CLAUDE.md` — purity, Q64.64 precision, unit-space (BUG-qr9), math invariants.
+- `src/execution/CLAUDE.md` — ShadowGuard chokepoint, phased rollout, secrets, rebalance/tick safety.
+
 **Style.** Be concise and actionable — state the problem, why it matters, and the fix. Post inline comments on the exact lines; use the single summary comment for a severity tally and cross-cutting notes. If nothing is worth raising, say so briefly — do not manufacture findings.

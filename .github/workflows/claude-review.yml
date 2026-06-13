@@ -50,7 +50,13 @@ jobs:
             Guidelines" section in CLAUDE.md at the repository root.
 
             Use `gh pr diff` to read the changes. Do NOT build, compile, or run
-            tests — no cargo, no clippy. Review statically from the diff.
+            tests — no cargo, no clippy. Review statically from the diff; you may
+            `Read`/`Grep` surrounding files for context.
+
+            Path-scoped rules: if the diff touches `src/math/` or
+            `src/execution/`, `Read` that directory's `CLAUDE.md` first (the diff
+            won't show it) and apply its rules ON TOP of the root guidelines.
+            These are the money paths — review them strictly.
 
             Depth: BALANCED. Report real bugs, security issues, and performance
             problems of medium or higher confidence. Skip style/formatting
@@ -71,4 +77,4 @@ jobs:
           claude_args: |
             --model claude-opus-4-8
             --max-turns 30
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
