@@ -175,7 +175,7 @@ pub fn fetch_tick_arrays(
     let datas = rpc.get_multiple_accounts_checked(&pdas, &program)?;
 
     let mut out = Vec::with_capacity(5);
-    for (start, data) in starts.iter().zip(datas.into_iter()) {
+    for (start, data) in starts.iter().zip(datas) {
         match data {
             Some(bytes) => match parse_tick_array(&bytes) {
                 Ok(ta) => out.push(ta),
