@@ -1754,8 +1754,6 @@ async fn main() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("--db-url or DATABASE_URL is required"))?;
                 let pool = storage::connect(db_url).await?;
                 storage::run_migrations(&pool).await?;
-                let repo = storage::positions::PositionsRepo::new(pool);
-                let _ = repo.pool();
                 println!("Migrations complete");
             }
         },

@@ -1,4 +1,3 @@
-pub mod positions;
 pub mod tick_reader;
 pub mod writer;
 

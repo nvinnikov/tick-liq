@@ -31,7 +31,7 @@ pub struct PoolTick {
 /// reconnects / duplicate deliveries are safe.
 ///
 /// Uses the non-macro `query` path so the crate compiles without a live
-/// `DATABASE_URL` at build time (matching the pattern in `positions.rs`).
+/// `DATABASE_URL` at build time.
 pub async fn write_pool_tick(pool: &PgPool, tick: &PoolTick) -> Result<()> {
     // u128 values are serialised as decimal strings; Postgres casts them via
     // the explicit `::numeric` in the SQL, matching NUMERIC(80,0) columns.
