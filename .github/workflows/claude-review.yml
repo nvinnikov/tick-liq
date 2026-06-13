@@ -29,3 +29,6 @@ jobs:
             style and formatting nitpicks. Be concise and actionable. Post inline
             comments on the specific lines where issues occur. If you find nothing
             worth raising, say so briefly instead of inventing concerns.
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 15
