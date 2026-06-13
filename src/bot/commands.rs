@@ -63,7 +63,11 @@ async fn handle_status(bot: Bot, msg: Message, state: BotState) -> anyhow::Resul
     }
 
     match super::queries::query_status(&state.db_pool, &state.pool_address).await {
-        Ok(s) => {
+        Ok(None) => {
+            bot.send_message(msg.chat.id, "No data yet — waiting for the first tick.")
+                .await?;
+        }
+        Ok(Some(s)) => {
             let pause_status = if s.halt_flag {
                 "HALTED (drawdown limit)"
             } else if s.operator_pause {

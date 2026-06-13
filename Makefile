@@ -29,18 +29,19 @@ fmt:
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 # Usage:
-#   make run ARGS="pool info --address <ADDR>"
-#   make run ARGS="position monitor --mint <MINT>"
-#   make run ARGS="backtest --pool <ADDR> --days 30 --strategy rebalance"
+#   make run ARGS="position --mint <MINT>"
+#   make run ARGS="watch --mint <MINT>"
+#   make run ARGS="backtest --entry-price 84 --price-lower 75 --price-upper 95 --days 30 --rebalance"
 
 run:
 	@[ -f .env ] && export $$(grep -v '^#' .env | xargs) ; cargo run -- $(ARGS)
 
 # ── Migrations ───────────────────────────────────────────────────────────────
+# Schema is embedded and applied by the binary itself (storage::run_migrations);
+# there is no sqlx migrations/ directory. `db migrate` is re-runnable.
 
 migrate:
-	@[ -f .env ] && export $$(grep -v '^#' .env | xargs) ; \
-	  sqlx migrate run || echo "sqlx not installed: cargo install sqlx-cli"
+	@[ -f .env ] && export $$(grep -v '^#' .env | xargs) ; cargo run -- db migrate
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
 

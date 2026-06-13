@@ -3,12 +3,6 @@ use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunMode {
-    Shadow,
-    Live,
-}
-
 mod analytics;
 mod backtest;
 mod bot;
@@ -21,6 +15,20 @@ mod protocols;
 mod rpc;
 mod storage;
 mod strategy;
+
+/// Decode the raw account bytes carried in an `accountSubscribe` notification.
+///
+/// The subscription uses `encoding: base64`, so the pushed frame already
+/// contains the full account at `/params/result/value/data` as
+/// `[base64_string, "base64"]`. Decoding it avoids a redundant HTTP
+/// `getAccount` per tick and guarantees the recorded `context.slot` matches
+/// the state we act on (an HTTP refetch could land on a later slot).
+/// Returns `None` if the field is absent or not valid base64.
+fn account_data_from_notification(json: &serde_json::Value) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let b64 = json.pointer("/params/result/value/data/0")?.as_str()?;
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+}
 
 #[derive(Parser)]
 #[command(name = "lp-inspect")]
@@ -356,6 +364,7 @@ async fn main() -> Result<()> {
                     };
 
                     let summary = display::table::PositionSummary {
+                        protocol: "Orca".to_string(),
                         pool_address: pos.whirlpool.to_string(),
                         fee_rate_bps: pool.fee_rate as f64 / 100.0,
                         price_lower,
@@ -469,6 +478,7 @@ async fn main() -> Result<()> {
                     };
 
                     let summary = display::table::PositionSummary {
+                        protocol: "Raydium".to_string(),
                         pool_address: pos.pool_id.to_string(),
                         fee_rate_bps: 0.0, // TODO: wire Raydium fee rate
                         price_lower,
@@ -533,16 +543,13 @@ async fn main() -> Result<()> {
             let max_il_val: Option<f64> = *max_il;
             let drift_min_margin_ratio_val: Option<f64> = *drift_min_margin_ratio;
 
-            let run_mode = if *live {
-                RunMode::Live
+            // ShadowGuard is the single source of truth for shadow/live mode.
+            let guard = if *live {
+                execution::ShadowGuard::live()
             } else {
-                RunMode::Shadow
+                execution::ShadowGuard::shadow()
             };
-            tracing::info!(mode = ?run_mode, "watch starting");
-            let guard = match run_mode {
-                RunMode::Shadow => execution::ShadowGuard::shadow(),
-                RunMode::Live => execution::ShadowGuard::live(),
-            };
+            tracing::info!(mode = ?guard, "watch starting");
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let mint_pubkey = Pubkey::from_str(mint)?;
@@ -633,7 +640,7 @@ async fn main() -> Result<()> {
 
             // ── Shadow gate: blocks --live until DB conditions are met (SHADOW-04) ──
             // Gate runs only in Live mode; shadow mode is never gated.
-            if matches!(run_mode, RunMode::Live) {
+            if !guard.is_shadow() {
                 match &db_pool {
                     None => {
                         eprintln!(
@@ -785,7 +792,9 @@ async fn main() -> Result<()> {
             tracing::debug!(approve_timeout_secs_val, "bot approval timeout configured");
 
             println!("Watching {}  (Ctrl+C to stop)", mint);
-            println!("WebSocket: {}", ws_url);
+            // Redact any api-key/password before printing (the RPC URL may embed
+            // a secret in its query string or userinfo).
+            println!("WebSocket: {}", data::ws::redact_url(&ws_url));
 
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -826,6 +835,7 @@ async fn main() -> Result<()> {
             let cex_price_state_closure = std::sync::Arc::clone(&cex_price_state);
 
             let pool_addr_clone = pool_addr.clone();
+            let position_pda_str = position_pda.to_string();
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
             let mint_str = mint.clone();
@@ -842,7 +852,29 @@ async fn main() -> Result<()> {
                 // One RPC client for the whole session (constructing a fresh
                 // reqwest client per tick costs a TCP+TLS handshake each time).
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
+                // Startup position snapshot, refreshed from chain each tick so a
+                // mid-session fee collect or liquidity change is reflected in
+                // fee_owed / liquidity (the position account is not part of the
+                // pool subscription, so it must be polled).
+                let mut current_pos = pos;
                 while let Some(json) = tick_rx.recv().await {
+                    // Refresh the position; on failure keep the last-known
+                    // snapshot rather than dropping the whole tick.
+                    match tokio::task::block_in_place(|| {
+                        rpc_inner.fetch_account_checked(&position_pda_str, &whirlpool_program)
+                    }) {
+                        Ok(d) => match protocols::orca::parse_position(&d) {
+                            Ok(p) => current_pos = p,
+                            Err(e) => {
+                                tracing::warn!("position reparse failed; using last-known: {}", e)
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("position refetch failed; using last-known: {}", e)
+                        }
+                    }
+                    let pos = &current_pos;
+
                     // `async` block so the body's per-tick `return`s keep their
                     // old "skip this tick" semantics.
                     #[allow(clippy::redundant_async_block)]
@@ -853,23 +885,37 @@ async fn main() -> Result<()> {
                     chrono::Utc::now().format("%H:%M:%S UTC")
                 );
 
-                // The solana RpcClient is blocking; block_in_place keeps it
-                // from starving this worker's peers. It no longer stalls the
-                // WS loop — we are on the processor task here.
-                let pool_data = match tokio::task::block_in_place(|| {
-                    rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program)
-                }) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch pool data: {}", e);
-                        return;
-                    }
-                };
-                let pool = match protocols::orca::parse_pool(&pool_data) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!("Failed to parse pool: {}", e);
-                        return;
+                // Pool state: prefer the account bytes already in THIS
+                // notification (so the state matches the slot we record below),
+                // falling back to an HTTP fetch only when the payload is absent.
+                let pool = match account_data_from_notification(&json) {
+                    Some(bytes) => match protocols::orca::parse_pool(&bytes) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!("Failed to parse notification pool data: {}", e);
+                            return;
+                        }
+                    },
+                    None => {
+                        // The solana RpcClient is blocking; block_in_place keeps
+                        // it from starving this worker's peers (we are on the
+                        // processor task, so it no longer stalls the WS loop).
+                        let pool_data = match tokio::task::block_in_place(|| {
+                            rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program)
+                        }) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                tracing::warn!("Failed to fetch pool data: {}", e);
+                                return;
+                            }
+                        };
+                        match protocols::orca::parse_pool(&pool_data) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!("Failed to parse pool: {}", e);
+                                return;
+                            }
+                        }
                     }
                 };
 
@@ -986,30 +1032,37 @@ async fn main() -> Result<()> {
                 // Risk gate runs immediately after these writes.
                 let snap_opt: Option<storage::writer::PnlSnapshot> =
                     if let Some(pg) = db_pool.as_ref() {
-                        // Extract Solana slot from the accountNotification context.
-                        let slot: i64 = json
-                            .pointer("/params/result/context/slot")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-
                         let now = chrono::Utc::now();
 
-                        let tick = storage::writer::PoolTick {
-                            pool_address: pool_addr_clone.clone(),
-                            slot,
-                            tick_current: pool.tick_current_index,
-                            sqrt_price: pool.sqrt_price,
-                            liquidity: pool.liquidity,
-                            fee_growth_global_a: pool.fee_growth_global_a,
-                            fee_growth_global_b: pool.fee_growth_global_b,
-                            observed_at: now,
-                        };
-
-                        // Await write_pool_tick (durability checkpoint). We run on
-                        // the processor task, so a plain .await no longer stalls
-                        // the WS loop.
-                        if let Err(e) = storage::writer::write_pool_tick(pg, &tick).await {
-                            tracing::warn!(error = %e, "pool_ticks write failed");
+                        // pool_ticks is keyed by (pool_address, slot). A missing
+                        // context.slot must NOT default to 0 — with ON CONFLICT
+                        // DO NOTHING that would silently drop every tick after
+                        // the first. Skip the durability write for this tick
+                        // instead (P&L / risk below still run).
+                        match json
+                            .pointer("/params/result/context/slot")
+                            .and_then(|v| v.as_i64())
+                        {
+                            Some(slot) => {
+                                let tick = storage::writer::PoolTick {
+                                    pool_address: pool_addr_clone.clone(),
+                                    slot,
+                                    tick_current: pool.tick_current_index,
+                                    sqrt_price: pool.sqrt_price,
+                                    liquidity: pool.liquidity,
+                                    fee_growth_global_a: pool.fee_growth_global_a,
+                                    fee_growth_global_b: pool.fee_growth_global_b,
+                                    observed_at: now,
+                                };
+                                // Awaited on the processor task (no longer the WS
+                                // loop), so this is the durability checkpoint.
+                                if let Err(e) = storage::writer::write_pool_tick(pg, &tick).await {
+                                    tracing::warn!(error = %e, "pool_ticks write failed");
+                                }
+                            }
+                            None => tracing::warn!(
+                                "notification missing context.slot; skipping pool_ticks write this tick"
+                            ),
                         }
 
                         let snap = storage::writer::PnlSnapshot {
@@ -1022,8 +1075,11 @@ async fn main() -> Result<()> {
                             price: price_current,
                             observed_at: now,
                         };
-                        // Fire-and-forget: does not block tick processing (PERSIST-03).
-                        std::mem::drop(storage::writer::spawn_pnl_write(pg.clone(), snap.clone()));
+                        // Awaited (not fire-and-forget): a detached task would be
+                        // cancelled by runtime drop on shutdown, losing the row.
+                        if let Err(e) = storage::writer::write_pnl_snapshot(pg, &snap).await {
+                            tracing::warn!(error = %e, mint = %snap.mint, "pnl write failed");
+                        }
                         Some(snap)
                     } else {
                         None
@@ -1041,6 +1097,20 @@ async fn main() -> Result<()> {
                         } else {
                             None
                         }
+                    };
+
+                    // Durable fields before evaluate — used to debounce persist.
+                    // current_drawdown_pct is derived and shifts every tick, so
+                    // it is deliberately excluded (persisting it each tick was a
+                    // redundant DB write per tick).
+                    let before = {
+                        let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
+                        (
+                            rm.state.peak_pnl,
+                            rm.state.pause_flag,
+                            rm.state.halt_flag,
+                            rm.state.operator_pause,
+                        )
                     };
 
                     let risk_action = {
@@ -1088,17 +1158,32 @@ async fn main() -> Result<()> {
                         strategy::risk_monitor::RiskAction::Continue => false,
                     };
 
-                    let risk_state = risk_arc
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .state
-                        .clone();
-                    if let Some(pg) = db_pool.as_ref() {
-                        strategy::risk_monitor::RiskMonitor::persist_state(pg.clone(), risk_state);
-                    } else {
-                        tracing::warn!(
-                            "risk: db_pool unexpectedly None inside risk gate, skipping persist"
+                    let (risk_state, changed) = {
+                        let rm = risk_arc.lock().unwrap_or_else(|p| p.into_inner());
+                        let after = (
+                            rm.state.peak_pnl,
+                            rm.state.pause_flag,
+                            rm.state.halt_flag,
+                            rm.state.operator_pause,
                         );
+                        (rm.state.clone(), after != before)
+                    };
+                    // Persist only on a durable-state transition; await it so a
+                    // breach detected just before shutdown is not lost.
+                    if changed {
+                        if let Some(pg) = db_pool.as_ref() {
+                            if let Err(e) = strategy::risk_monitor::RiskMonitor::persist_state(
+                                pg, &risk_state,
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %e, "risk_state persist failed");
+                            }
+                        } else {
+                            tracing::warn!(
+                                "risk: db_pool unexpectedly None inside risk gate, skipping persist"
+                            );
+                        }
                     }
 
                     if halt_tick {
@@ -1277,7 +1362,16 @@ async fn main() -> Result<()> {
                     };
 
                     if let Some(row) = shadow_row {
-                        storage::writer::spawn_shadow_write(pg.clone(), row);
+                        // Awaited (not fire-and-forget): a detached task would be
+                        // cancelled by runtime drop on shutdown, losing a row the
+                        // 14-day shadow gate depends on.
+                        if let Err(e) = storage::writer::write_shadow_rebalance(pg, &row).await {
+                            tracing::error!(
+                                error = %e,
+                                pool = %pool_addr_clone,
+                                "failed to write shadow_rebalances row"
+                            );
+                        }
                     }
                 }
                     }

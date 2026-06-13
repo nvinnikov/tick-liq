@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
@@ -8,6 +8,12 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_BASE: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// Minimum time a session must survive before we treat the connection as
+/// "healthy" and reset the reconnect backoff. A server that accepts the WS
+/// upgrade and then immediately closes (or rejects the subscribe) would
+/// otherwise be hammered at ~1 req/s forever — exponential backoff never
+/// engaging — because every such session reports `connected: true`.
+const MIN_HEALTHY_SESSION: Duration = Duration::from_secs(60);
 
 /// Callback invoked for each `accountNotification` JSON value received.
 pub type NotifyFn = Box<dyn Fn(serde_json::Value) + Send + 'static>;
@@ -34,16 +40,19 @@ pub async fn watch_account(
             return;
         }
 
-        info!("WS watch: connecting to {}", ws_url);
+        info!("WS watch: connecting to {}", redact_url(&ws_url));
+        let session_start = Instant::now();
         match run_session(&ws_url, &account, &mut shutdown, &on_notify).await {
             SessionResult::Shutdown => {
                 info!("WS watch: clean shutdown");
                 return;
             }
             SessionResult::Reconnect { reason, connected } => {
-                if connected {
-                    // The WS handshake succeeded; session dropped later.
-                    // Reset so flapping connections don't saturate at 30 s.
+                if connected && session_start.elapsed() >= MIN_HEALTHY_SESSION {
+                    // The session ran long enough to count as healthy; reset so
+                    // a genuine mid-life drop reconnects promptly. A session
+                    // that died sooner (instant close / subscribe reject) keeps
+                    // the backoff growing so we don't hammer the endpoint.
                     backoff = RECONNECT_BASE;
                 }
                 warn!(
@@ -242,9 +251,63 @@ fn handle_text(text: &str, on_notify: &NotifyFn) -> Option<String> {
     None
 }
 
+/// Redact secrets from an RPC/WS URL before logging.
+///
+/// RPC endpoints commonly carry the API key in the query string
+/// (`wss://…/?api-key=SECRET`, Helius-style) or as a userinfo password
+/// (`wss://user:secret@host`). Both are stripped so the key never lands in
+/// stdout / tracing logs (which may be shipped to journald, CI, screen-share).
+pub fn redact_url(url: &str) -> String {
+    let (base, had_query) = match url.split_once('?') {
+        Some((b, _)) => (b, true),
+        None => (url, false),
+    };
+    let redacted = match base.find("://") {
+        Some(scheme_end) => {
+            let rest = &base[scheme_end + 3..];
+            let authority_end = rest.find('/').unwrap_or(rest.len());
+            let authority = &rest[..authority_end];
+            match authority
+                .rfind('@')
+                .and_then(|at| authority[..at].find(':').map(|colon| (at, colon)))
+            {
+                Some((at, colon)) => format!(
+                    "{}://{}:***{}",
+                    &base[..scheme_end],
+                    &rest[..colon],
+                    &rest[at..]
+                ),
+                None => base.to_string(),
+            }
+        }
+        None => base.to_string(),
+    };
+    if had_query {
+        format!("{}?<redacted>", redacted)
+    } else {
+        redacted
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_url_strips_query_and_password() {
+        assert_eq!(
+            redact_url("wss://mainnet.helius-rpc.com/?api-key=SECRET"),
+            "wss://mainnet.helius-rpc.com/?<redacted>"
+        );
+        assert_eq!(
+            redact_url("wss://user:s3cret@rpc.example.com/path"),
+            "wss://user:***@rpc.example.com/path"
+        );
+        assert_eq!(
+            redact_url("wss://api.devnet.solana.com"),
+            "wss://api.devnet.solana.com"
+        );
+    }
 
     #[test]
     fn handle_text_ignores_malformed_json() {

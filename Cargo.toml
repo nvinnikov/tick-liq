@@ -28,6 +28,7 @@ orca_whirlpools_core = "2"
 borsh = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 
 # Async
 tokio = { version = "1", features = ["full"] }

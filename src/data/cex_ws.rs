@@ -7,12 +7,27 @@ use binance_sdk::config::ConfigurationWebsocketStreams;
 use binance_sdk::spot::SpotWsStreams;
 use binance_sdk::spot::websocket_streams::{BookTickerParams, BookTickerResponse};
 
-/// Backoff delay between initial-connect / subscription attempts.
-/// binance-sdk v45 handles in-session reconnects, but a failure *before*
-/// the connection is established (DNS, TLS, auth, malformed params …)
-/// is surfaced as a one-shot error — we retry it ourselves with a fixed
-/// 5 s delay until shutdown fires.
-const CONNECT_RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Exponential backoff bounds for initial-connect / subscription attempts.
+/// binance-sdk v45 handles in-session reconnects, but a failure *before* the
+/// connection is established (DNS, TLS, auth, malformed params …) is surfaced
+/// as a one-shot error. A fixed retry hammers Binance's handshake rate-limit
+/// during an outage, so we grow the delay exponentially up to a cap.
+const CONNECT_RETRY_BASE: Duration = Duration::from_secs(5);
+const CONNECT_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// How often, and after how long without a fresh quote, we treat a live
+/// session as dead and force a reconnect. binance-sdk v45 makes only a single
+/// in-session reconnect attempt per drop, so a longer outage can leave the
+/// session permanently silent with no error — without this watchdog the feed
+/// would stay dead until process restart.
+const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const FEED_STALE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How a live session ended.
+enum SessionEnd {
+    Shutdown,
+    Stale,
+}
 
 pub struct CexPrice {
     pub price: f64,
@@ -92,6 +107,8 @@ pub async fn watch_binance_price(
     state: CexPriceState,
     mut shutdown: broadcast::Receiver<()>,
 ) {
+    let mut backoff = CONNECT_RETRY_BASE;
+
     loop {
         // Check for shutdown before every connect attempt so we don't
         // reconnect forever after the caller has torn everything down.
@@ -102,37 +119,79 @@ pub async fn watch_binance_price(
 
         match try_connect_and_subscribe(&symbol, &state).await {
             Ok(connection) => {
-                // Connection live; hold it until shutdown. Match explicitly so
-                // a closed/lagged broadcast surfaces in logs instead of being
-                // silently swallowed by `let _ = …` (IN-03). Both variants
-                // mean "no more shutdown signals will arrive" → we proceed to
-                // disconnect and exit either way.
-                match shutdown.recv().await {
-                    Ok(()) => info!("cex_ws: shutdown received, disconnecting"),
-                    Err(e) => warn!(
-                        "cex_ws: shutdown channel closed unexpectedly: {}; disconnecting",
-                        e
-                    ),
-                }
+                // Healthy connect — reset the connect backoff.
+                backoff = CONNECT_RETRY_BASE;
+
+                // Hold the connection until shutdown OR the feed goes stale
+                // (SDK reconnect exhausted / stream silently died).
+                let end = monitor_session(&state, &mut shutdown).await;
                 if let Err(e) = connection.disconnect().await {
                     warn!("cex_ws: disconnect error: {}", e);
                 }
-                return;
+                match end {
+                    SessionEnd::Shutdown => {
+                        info!("cex_ws: shutdown received, disconnecting");
+                        return;
+                    }
+                    SessionEnd::Stale => {
+                        warn!(
+                            "cex_ws: no fresh quote for >{}s -- reconnecting",
+                            FEED_STALE_TIMEOUT.as_secs()
+                        );
+                        // Reconnect immediately (this is not a connect failure).
+                        continue;
+                    }
+                }
             }
             Err(e) => {
                 warn!(
                     "cex_ws: initial connect/subscribe failed: {}; retrying in {}s",
                     e,
-                    CONNECT_RETRY_DELAY.as_secs()
+                    backoff.as_secs()
                 );
                 // Wait for either the backoff to elapse or shutdown, whichever
                 // comes first — avoids a pointless retry right before we exit.
                 tokio::select! {
-                    _ = tokio::time::sleep(CONNECT_RETRY_DELAY) => {}
+                    _ = tokio::time::sleep(backoff) => {}
                     _ = shutdown.recv() => {
                         info!("cex_ws: shutdown received during backoff, exiting");
                         return;
                     }
+                }
+                backoff = (backoff * 2).min(CONNECT_RETRY_MAX);
+            }
+        }
+    }
+}
+
+/// Hold a live session until shutdown fires or the feed goes stale.
+///
+/// Polls `state.updated_at` on a fixed interval: if no fresh quote has arrived
+/// within [`FEED_STALE_TIMEOUT`] the session is considered dead and the caller
+/// reconnects. A never-populated state (no message since connect) is judged
+/// against the time since monitoring began.
+async fn monitor_session(
+    state: &CexPriceState,
+    shutdown: &mut broadcast::Receiver<()>,
+) -> SessionEnd {
+    let session_started = Instant::now();
+    let mut ticker = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
+    ticker.tick().await; // consume the immediate first tick
+
+    loop {
+        tokio::select! {
+            // Either Ok(()) or a closed/lagged channel means "stop".
+            _ = shutdown.recv() => return SessionEnd::Shutdown,
+            _ = ticker.tick() => {
+                let stale = {
+                    let guard = state.read().unwrap_or_else(|p| p.into_inner());
+                    match guard.as_ref() {
+                        Some(cp) => cp.updated_at.elapsed() > FEED_STALE_TIMEOUT,
+                        None => session_started.elapsed() > FEED_STALE_TIMEOUT,
+                    }
+                };
+                if stale {
+                    return SessionEnd::Stale;
                 }
             }
         }

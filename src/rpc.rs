@@ -113,6 +113,44 @@ impl SolanaRpc {
         Ok(account.data)
     }
 
+    /// Fetch several accounts in a single RPC round-trip, verifying each
+    /// returned account's owner against `expected_owner`.
+    ///
+    /// Returns one slot per input address in order: `Some(data)` for an account
+    /// that exists and has the expected owner, `None` for a missing account or
+    /// one whose owner does not match (logged). One batched call replaces N
+    /// sequential `get_account`s — each of which would otherwise pay the full
+    /// 3-attempt retry/backoff even for legitimately-uninitialized accounts.
+    pub fn get_multiple_accounts_checked(
+        &self,
+        pubkeys: &[Pubkey],
+        expected_owner: &Pubkey,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let accounts = self.retry("get_multiple_accounts", || {
+            self.client
+                .get_multiple_accounts(pubkeys)
+                .map_err(|e| anyhow!("get_multiple_accounts failed: {}", e))
+        })?;
+
+        Ok(accounts
+            .into_iter()
+            .zip(pubkeys.iter())
+            .map(|(maybe, pk)| match maybe {
+                Some(acct) if acct.owner == *expected_owner => Some(acct.data),
+                Some(acct) => {
+                    tracing::warn!(
+                        "account {} has owner {} but expected {} -- skipping",
+                        pk,
+                        acct.owner,
+                        expected_owner
+                    );
+                    None
+                }
+                None => None,
+            })
+            .collect())
+    }
+
     /// Fetch the `decimals` field from an SPL Token mint account.
     ///
     /// SPL mint layout (packed): option<mint_authority> (36 bytes) + supply (8 bytes) = 44 bytes,

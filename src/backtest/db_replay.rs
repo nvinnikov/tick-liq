@@ -104,6 +104,17 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     let mut total_rebalances: u32 = 0;
     let mut days_in_range: u32 = 0;
 
+    // IL realized (locked in) at prior rebalances. Reported IL is always
+    // realized + current-unrealized so totals survive rebalances (GBM mode
+    // does the same); dropping this understates total IL / overstates P&L.
+    let mut realized_il_usd: f64 = 0.0;
+
+    // Last observation of the day currently being accumulated. The day-boundary
+    // flush must attribute the COMPLETED day's last price/IL to it — not the
+    // next day's first tick (which is what `t` holds at the boundary).
+    let mut last_price = sqrt_q64_to_price(ticks[0].sqrt_price) * ui_factor;
+    let mut last_unrealized_il_usd: f64 = 0.0;
+
     // Carry the previous fee_growth_global_* for delta computation.
     let mut prev_fg_a: u128 = ticks[0].fee_growth_global_a;
     let mut prev_fg_b: u128 = ticks[0].fee_growth_global_b;
@@ -123,13 +134,11 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
         // ── Day boundary ────────────────────────────────────────────────────
         if day_date != current_day_date {
-            // Flush the completed day. `day_results` records `cumulative_fees`
-            // (total since start of replay); per-day fee delta was dropped as
-            // dead computation (IN-01). Restore if a future DayResult exposes
-            // daily deltas explicitly.
-            let il_frac = compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper);
-            let il_usd = il_frac * input.initial_value_usd;
-            let net_pnl_usd = cumulative_fees + il_usd;
+            // Flush the COMPLETED day using its OWN last observation, not this
+            // (new day's) first tick. `cumulative_fees` is already end-of-day
+            // (the new tick's fee delta is added below the boundary).
+            let il_to_date = realized_il_usd + last_unrealized_il_usd;
+            let net_pnl_usd = cumulative_fees + il_to_date;
 
             if day_was_in_range {
                 days_in_range += 1;
@@ -138,10 +147,10 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
             current_day_num += 1;
             day_results.push(DayResult {
                 day: current_day_num,
-                price,
+                price: last_price,
                 in_range: day_was_in_range,
                 cumulative_fees_usd: cumulative_fees,
-                il_usd,
+                il_usd: il_to_date,
                 net_pnl_usd,
             });
 
@@ -178,10 +187,15 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
         prev_fg_a = t.fee_growth_global_a;
         prev_fg_b = t.fee_growth_global_b;
 
-        // ── Rebalance signal ────────────────────────────────────────────────
-        let il_frac = compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper);
-        let il_usd = il_frac * input.initial_value_usd;
-        let net_pnl = cumulative_fees + il_usd;
+        // ── IL + rebalance signal ───────────────────────────────────────────
+        let unrealized_il_usd =
+            compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper)
+                * input.initial_value_usd;
+        let net_pnl = cumulative_fees + realized_il_usd + unrealized_il_usd;
+
+        // Remember this tick as the current day's latest observation.
+        last_price = price;
+        last_unrealized_il_usd = unrealized_il_usd;
 
         let signal = strategy::should_rebalance(
             t.tick_current,
@@ -193,6 +207,10 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
 
         if matches!(signal, RebalanceDecision::Rebalance { .. }) {
             total_rebalances += 1;
+            // Lock in this segment's IL before resetting the range. After the
+            // reset entry == price, so unrealized IL restarts from 0.
+            realized_il_usd += unrealized_il_usd;
+            last_unrealized_il_usd = 0.0;
             // Re-centre range around current price using the configured factors.
             // Prices are UI-domain; tick bounds convert back to raw.
             cur_entry_price = price;
@@ -204,30 +222,19 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     }
 
     // ── Flush the final day ─────────────────────────────────────────────────
-    let last = ticks.last().unwrap(); // safe: non-empty checked above
-    let final_price = sqrt_q64_to_price(last.sqrt_price) * ui_factor;
-    let final_in_range = last.tick_current >= tick_lower && last.tick_current <= tick_upper;
-
-    if final_in_range {
-        day_was_in_range = true;
-    }
+    // `day_was_in_range`, `last_price` and `last_unrealized_il_usd` already
+    // reflect the final tick (updated in-loop), so no recompute is needed.
     if day_was_in_range {
         days_in_range += 1;
     }
 
-    let final_il_frac = compute_il(
-        cur_entry_price,
-        final_price,
-        cur_price_lower,
-        cur_price_upper,
-    );
-    let final_il_usd = final_il_frac * input.initial_value_usd;
+    let final_il_usd = realized_il_usd + last_unrealized_il_usd;
     let final_net_pnl_usd = cumulative_fees + final_il_usd;
 
     current_day_num += 1;
     day_results.push(DayResult {
         day: current_day_num,
-        price: final_price,
+        price: last_price,
         in_range: day_was_in_range,
         cumulative_fees_usd: cumulative_fees,
         il_usd: final_il_usd,
@@ -676,5 +683,58 @@ mod tests {
         // DB mode sets these to 0.0 (not applicable).
         assert_eq!(snap.annual_vol_pct, 0.0);
         assert_eq!(snap.daily_volume_usd, 0.0);
+    }
+
+    /// A rebalance must LOCK IN the IL realized up to that point; total IL may
+    /// not silently drop it when the range re-centers (regression: DB mode
+    /// previously reset entry without accumulating realized IL).
+    #[test]
+    fn rebalance_accumulates_realized_il() {
+        // decimals 0/0 → price == sqrt^2. Build sqrt_price for prices 1.0, 0.8.
+        let sp_1 = 1u128 << 64;
+        // sqrt(0.8) * 2^64
+        let sp_08 = ((0.8_f64.sqrt()) * (1u128 << 64) as f64) as u128;
+        // tick for 0.8 is well below the [0.9,1.1] range → out of range.
+        let tick_08 = price_to_tick(0.8, 64);
+        let ticks = vec![
+            make_tick(0, 0, sp_1, 1000, 0),
+            make_tick(1, tick_08, sp_08, 1000, 0), // out of range → rebalance
+            make_tick(2, 0, sp_1, 1000, 0),        // price recovers to 1.0
+        ];
+        let mut input = default_input(); // entry 1.0, range [0.9,1.1], value 10_000
+        input.rebalance_cfg.rebalance_out_of_range = true;
+        let result = run_db_backtest(input, &ticks).unwrap();
+
+        assert!(result.total_rebalances >= 1, "expected a rebalance");
+        // IL realized at the 0.8 dip is locked in; after recovery to 1.0 the
+        // new segment's IL is ~0, but the realized loss must remain in the
+        // total — so total_il must be strictly negative, not ~0.
+        assert!(
+            result.total_il_usd < -1.0,
+            "realized IL must persist after rebalance, got {}",
+            result.total_il_usd
+        );
+    }
+
+    /// The day-boundary flush must record the COMPLETED day's last price, not
+    /// the first tick of the following day (regression: off-by-one attribution).
+    #[test]
+    fn day_boundary_uses_completed_day_last_price() {
+        // Day 1: two ticks at price 1.0. Day 2: one tick at price ~0.95.
+        let sp_1 = 1u128 << 64;
+        let sp_095 = ((0.95_f64.sqrt()) * (1u128 << 64) as f64) as u128;
+        let ticks = vec![
+            make_tick(0, 0, sp_1, 1000, 0),
+            make_tick(3600, 0, sp_1, 1000, 0), // still day 1, price 1.0
+            make_tick(86400, 0, sp_095, 1000, 0), // day 2, price 0.95
+        ];
+        let result = run_db_backtest(default_input(), &ticks).unwrap();
+        assert_eq!(result.days.len(), 2);
+        // Day 1's recorded price must be 1.0 (its own last tick), NOT 0.95.
+        assert!(
+            (result.days[0].price - 1.0).abs() < 1e-9,
+            "day 1 price should be its last observation 1.0, got {}",
+            result.days[0].price
+        );
     }
 }

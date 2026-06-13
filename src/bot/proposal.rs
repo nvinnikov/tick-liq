@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use teloxide::prelude::*;
@@ -8,8 +9,20 @@ use tracing::{info, warn};
 use super::{PendingApproval, PendingApprovalSlot};
 
 /// Monotonic proposal counter. IDs bind an `/approve <id>` to the exact
-/// proposal message the operator saw (starts at 1).
-static NEXT_PROPOSAL_ID: AtomicU64 = AtomicU64::new(1);
+/// proposal message the operator saw.
+///
+/// Seeded from the process start time (unix seconds) rather than a fixed 1:
+/// otherwise every restart reuses IDs from 1, so a stale `/approve 1` left in
+/// the chat from a previous run would match the new run's proposal #1 and
+/// authorize a rebalance the operator never reviewed.
+static NEXT_PROPOSAL_ID: LazyLock<AtomicU64> = LazyLock::new(|| {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(1)
+        .max(1);
+    AtomicU64::new(seed)
+});
 
 /// Simulated outcome data sent in the proposal message.
 pub struct ProposalData {

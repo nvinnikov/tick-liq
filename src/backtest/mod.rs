@@ -165,12 +165,15 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
         };
         cumulative_fees += fees_today;
 
-        // IL relative to current entry.
-        let il_fraction = compute_il(entry_price, price, price_lower, price_upper);
+        // IL relative to the current entry (unrealized for this segment), plus
+        // any IL already locked in by prior rebalances. Reporting total IL to
+        // date keeps every per-day row and the final total consistent.
         let position_value = params.initial_value_usd; // constant-liquidity approximation
-        let il_usd = il_fraction * position_value;
+        let unrealized_il_usd =
+            compute_il(entry_price, price, price_lower, price_upper) * position_value;
+        let il_to_date = realized_il_usd + unrealized_il_usd;
 
-        let net_pnl = cumulative_fees + il_usd;
+        let net_pnl = cumulative_fees + il_to_date;
 
         // Rebalance signal.
         if params.strategy_rebalance {
@@ -188,8 +191,11 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
 
             if matches!(signal, RebalanceDecision::Rebalance { .. }) {
                 total_rebalances += 1;
-                // Accumulate IL realized at this rebalance before resetting.
-                realized_il_usd += il_usd;
+                // Lock in this segment's IL before resetting. After the reset
+                // the new entry == current price, so next-day unrealized IL
+                // starts from 0 — no double counting (the day row already used
+                // il_to_date above).
+                realized_il_usd += unrealized_il_usd;
                 // Reset: re-center range around current price (same width).
                 let half_width = (price_upper - price_lower) / 2.0;
                 entry_price = price;
@@ -204,16 +210,16 @@ pub fn run(params: &BacktestParams, seed: u64) -> BacktestResult {
             price,
             in_range,
             cumulative_fees_usd: cumulative_fees,
-            il_usd,
+            il_usd: il_to_date,
             net_pnl_usd: net_pnl,
         });
     }
 
-    // Final totals from last day snapshot.
+    // Final totals from last day snapshot. `il_usd` already carries total IL to
+    // date (realized + current unrealized), so do not add realized again.
     let last = day_results.last();
     let total_fees = last.map(|d| d.cumulative_fees_usd).unwrap_or(0.0);
-    let last_day_il = last.map(|d| d.il_usd).unwrap_or(0.0);
-    let total_il = realized_il_usd + last_day_il;
+    let total_il = last.map(|d| d.il_usd).unwrap_or(0.0);
     let net = total_fees + total_il;
 
     let fee_apy = if params.days > 0 && params.initial_value_usd > 0.0 {

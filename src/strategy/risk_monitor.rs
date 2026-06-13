@@ -123,7 +123,9 @@ impl RiskMonitor {
             .map_err(|e| anyhow::anyhow!("load_or_init SELECT failed: {}", e))?;
 
         if let Some(row) = row_opt {
-            let halt_flag: bool = row.get("halt_flag");
+            // try_get (not get) so a NULL or schema-type mismatch returns an
+            // anyhow::Err instead of panicking (no-panic invariant).
+            let halt_flag: bool = row.try_get("halt_flag")?;
             if halt_flag {
                 tracing::error!(
                     pool = %pool_address,
@@ -132,12 +134,12 @@ impl RiskMonitor {
             }
             let state = RiskState {
                 pool_address: pool_address.to_string(),
-                peak_pnl: row.get("peak_pnl"),
-                current_drawdown_pct: row.get("current_drawdown_pct"),
-                pause_flag: row.get("pause_flag"),
+                peak_pnl: row.try_get("peak_pnl")?,
+                current_drawdown_pct: row.try_get("current_drawdown_pct")?,
+                pause_flag: row.try_get("pause_flag")?,
                 halt_flag,
-                operator_pause: row.get("operator_pause"),
-                updated_at: row.get("updated_at"),
+                operator_pause: row.try_get("operator_pause")?,
+                updated_at: row.try_get("updated_at")?,
             };
             return Ok(state);
         }
@@ -200,39 +202,35 @@ impl RiskMonitor {
     /// Uses `ON CONFLICT ... DO UPDATE` — all fields except `pool_address` are
     /// overwritten. `halt_flag` is intentionally included so a breach detected in
     /// memory is immediately durably stored. Operators clear it via SQL (D-12).
-    pub fn persist_state(pool: PgPool, state: RiskState) {
-        tokio::spawn(async move {
-            let result = pool
-                .execute(
-                    query(
-                        "INSERT INTO risk_state \
-                         (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, operator_pause, updated_at) \
-                         VALUES ($1, $2, $3, $4, $5, $6, NOW()) \
-                         ON CONFLICT (pool_address) DO UPDATE SET \
-                           peak_pnl = EXCLUDED.peak_pnl, \
-                           current_drawdown_pct = EXCLUDED.current_drawdown_pct, \
-                           pause_flag = EXCLUDED.pause_flag, \
-                           halt_flag = EXCLUDED.halt_flag, \
-                           operator_pause = EXCLUDED.operator_pause, \
-                           updated_at = EXCLUDED.updated_at",
-                    )
-                    .bind(&state.pool_address)
-                    .bind(state.peak_pnl)
-                    .bind(state.current_drawdown_pct)
-                    .bind(state.pause_flag)
-                    .bind(state.halt_flag)
-                    .bind(state.operator_pause),
-                )
-                .await;
-
-            if let Err(e) = result {
-                warn!(
-                    error = %e,
-                    pool = %state.pool_address,
-                    "risk_state persist failed"
-                );
-            }
-        });
+    ///
+    /// Awaited by the caller (rather than fire-and-forget) so a breach detected
+    /// just before shutdown is durably stored instead of being cancelled when
+    /// the runtime drops. Call only when the durable state actually changed —
+    /// the caller debounces, since `current_drawdown_pct` shifts every tick.
+    pub async fn persist_state(pool: &PgPool, state: &RiskState) -> anyhow::Result<()> {
+        pool.execute(
+            query(
+                "INSERT INTO risk_state \
+                 (pool_address, peak_pnl, current_drawdown_pct, pause_flag, halt_flag, operator_pause, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW()) \
+                 ON CONFLICT (pool_address) DO UPDATE SET \
+                   peak_pnl = EXCLUDED.peak_pnl, \
+                   current_drawdown_pct = EXCLUDED.current_drawdown_pct, \
+                   pause_flag = EXCLUDED.pause_flag, \
+                   halt_flag = EXCLUDED.halt_flag, \
+                   operator_pause = EXCLUDED.operator_pause, \
+                   updated_at = EXCLUDED.updated_at",
+            )
+            .bind(&state.pool_address)
+            .bind(state.peak_pnl)
+            .bind(state.current_drawdown_pct)
+            .bind(state.pause_flag)
+            .bind(state.halt_flag)
+            .bind(state.operator_pause),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("risk_state persist failed: {}", e))?;
+        Ok(())
     }
 
     /// Derive the Drift User PDA for a given wallet authority (subaccount 0).
@@ -364,27 +362,25 @@ impl RiskMonitor {
             return None;
         }
 
-        if payload.len() >= PERP_ARRAY_OFFSET + MAX_PERP_POSITIONS * PERP_POSITION_SIZE {
-            for i in 0..MAX_PERP_POSITIONS {
-                let pos_start = PERP_ARRAY_OFFSET + i * PERP_POSITION_SIZE;
-                let base_start = pos_start + PERP_POSITION_BASE_OFFSET;
-                let quote_start = pos_start + PERP_POSITION_QUOTE_OFFSET;
+        // The length guard above already proves every offset below is in bounds
+        // (max quote_start+8 == PERP_ARRAY_OFFSET + MAX_PERP_POSITIONS*SIZE).
+        for i in 0..MAX_PERP_POSITIONS {
+            let pos_start = PERP_ARRAY_OFFSET + i * PERP_POSITION_SIZE;
+            let base_start = pos_start + PERP_POSITION_BASE_OFFSET;
+            let quote_start = pos_start + PERP_POSITION_QUOTE_OFFSET;
 
-                if quote_start + 8 <= payload.len() {
-                    let base = i64::from_le_bytes(
-                        payload[base_start..base_start + 8]
-                            .try_into()
-                            .unwrap_or([0u8; 8]),
-                    );
-                    let quote = i64::from_le_bytes(
-                        payload[quote_start..quote_start + 8]
-                            .try_into()
-                            .unwrap_or([0u8; 8]),
-                    );
-                    total_base_abs = total_base_abs.saturating_add(base.abs());
-                    total_quote_abs = total_quote_abs.saturating_add(quote.abs());
-                }
-            }
+            let base = i64::from_le_bytes(
+                payload[base_start..base_start + 8]
+                    .try_into()
+                    .unwrap_or([0u8; 8]),
+            );
+            let quote = i64::from_le_bytes(
+                payload[quote_start..quote_start + 8]
+                    .try_into()
+                    .unwrap_or([0u8; 8]),
+            );
+            total_base_abs = total_base_abs.saturating_add(base.abs());
+            total_quote_abs = total_quote_abs.saturating_add(quote.abs());
         }
 
         // Proxy ratio: |quote| / (|base| + 1) to avoid division by zero.
@@ -442,15 +438,12 @@ impl RiskMonitor {
 
         if let Some(max_il) = self.max_il_pct {
             if il_pct > max_il {
-                if !self.state.pause_flag {
-                    self.state.pause_flag = true;
-                    self.state.updated_at = Utc::now();
-                    return RiskAction::PauseRebalancing { il_pct };
-                } else {
-                    // Already paused — propagate
-                    self.state.updated_at = Utc::now();
-                    return RiskAction::PauseRebalancing { il_pct };
-                }
+                // Set the flag (idempotent if already paused) and propagate the
+                // pause either way — both the first-trip and already-paused
+                // cases produce the identical action.
+                self.state.pause_flag = true;
+                self.state.updated_at = Utc::now();
+                return RiskAction::PauseRebalancing { il_pct };
             } else if self.state.pause_flag {
                 // IL dropped back below threshold — auto-resume
                 self.state.pause_flag = false;

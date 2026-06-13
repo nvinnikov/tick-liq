@@ -47,6 +47,8 @@ pub fn print_depth_histogram(levels: &[LiquidityLevel], current_price: f64) {
 
 // Uses owned Strings to avoid lifetime complexity (no &'a str).
 pub struct PositionSummary {
+    /// Protocol label shown in the header (e.g. "Orca", "Raydium").
+    pub protocol: String,
     pub pool_address: String,
     pub fee_rate_bps: f64,
     pub price_lower: f64,
@@ -65,8 +67,9 @@ pub struct PositionSummary {
 
 pub fn print_position(s: &PositionSummary) {
     let label = format!(
-        "Position: {}...  (Orca {:.2} bps)",
+        "Position: {}...  ({} {:.2} bps)",
         &s.pool_address[..8],
+        s.protocol,
         s.fee_rate_bps
     );
     let sep = "─".repeat(label.len());
@@ -133,6 +136,7 @@ mod tests {
         };
 
         let s = PositionSummary {
+            protocol: "Orca".to_string(),
             pool_address: "11111111111111111111111111111111".to_string(),
             fee_rate_bps: 30.0,
             price_lower: 100.0,

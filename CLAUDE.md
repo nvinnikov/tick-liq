@@ -18,8 +18,9 @@ cargo test
 # Run a single test
 cargo test <test_name>
 
-# Property-based tests
-cargo test --test math_tests
+# Property-based + golden math suites (integration test targets)
+cargo test --test math_props
+cargo test --test math_golden
 
 # Lint
 cargo clippy -- -D warnings
@@ -27,10 +28,18 @@ cargo clippy -- -D warnings
 # Format
 cargo fmt
 
-# Run CLI
-cargo run -- pool info --address <POOL_ADDRESS>
-cargo run -- position monitor --mint <POSITION_MINT>
-cargo run -- backtest --pool <ADDRESS> --days 30 --strategy rebalance
+# Run CLI (binary is `lp-inspect`)
+cargo run -- position --mint <POSITION_MINT> [--protocol orca|raydium] [--entry-price <P>]
+cargo run -- watch --mint <POSITION_MINT> [--live] [--telegram] [--cex-symbol SOLUSDC]
+cargo run -- depth --pool <POOL_ADDRESS>
+cargo run -- impact --pool <POOL_ADDRESS> --size <USD>
+cargo run -- strategy check --mint <POSITION_MINT>
+cargo run -- db migrate           # applies the embedded schema (idempotent)
+cargo run -- backtest --entry-price 84 --price-lower 75 --price-upper 95 --days 30 --rebalance
+cargo run -- backtest --pool <POOL_ADDRESS> --from 2026-01-01 --to 2026-01-15 \
+    --entry-price 84 --price-lower 75 --price-upper 95 --decimals-a 9 --decimals-b 6  # DB replay
+cargo run -- rebalance --mint <POSITION_MINT> --dry-run
+cargo run -- hedge --mint <POSITION_MINT> --dry-run
 ```
 
 ## Architecture
@@ -64,9 +73,10 @@ Real P&L = `fees_earned - impermanent_loss`
 
 ## Dependencies
 
-- `solana-client`, `solana-sdk` 1.18, `anchor-client` 0.29
-- `tokio` (full), `sqlx` (postgres + timescaledb), `clap` v4 (derive)
-- `anyhow`, `tracing`, `reqwest`, `tokio-tungstenite`
+- `solana-client` 4.0-beta, `solana-sdk` 4 (façade); `orca_whirlpools_core` 2 for tick↔sqrt-price math. No `anchor-client` — accounts are parsed directly with `borsh` (discriminator skipped, owner verified).
+- `tokio` (full), `tokio-tungstenite` (native-tls), `sqlx-core`/`sqlx-postgres` 0.8 (Postgres + TimescaleDB), `clap` v4 (derive + env)
+- `anyhow`, `thiserror`, `tracing`, `serde`/`serde_json`, `base64`, `chrono`
+- `binance-sdk` 45 (spot) for the CEX price feed; `teloxide` 0.13 for the Telegram bot
 - Dev: `proptest`
 
 ## Code Review Guidelines
