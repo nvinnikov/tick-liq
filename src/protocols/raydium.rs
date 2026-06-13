@@ -58,7 +58,11 @@ pub fn parse_pool(data: &[u8]) -> Result<RaydiumPool> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
-    RaydiumPool::try_from_slice(&data[DISC..])
+    // The struct deliberately omits the account tail, so use `deserialize`
+    // (tolerates trailing bytes) — `try_from_slice` rejects any input with
+    // bytes left over, i.e. every real on-chain account.
+    let mut cursor = &data[DISC..];
+    RaydiumPool::deserialize(&mut cursor)
         .map_err(|e| anyhow!("Failed to deserialize Raydium pool: {}", e))
 }
 
@@ -66,7 +70,8 @@ pub fn parse_position(data: &[u8]) -> Result<RaydiumPosition> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
-    RaydiumPosition::try_from_slice(&data[DISC..])
+    let mut cursor = &data[DISC..];
+    RaydiumPosition::deserialize(&mut cursor)
         .map_err(|e| anyhow!("Failed to deserialize Raydium position: {}", e))
 }
 
@@ -186,5 +191,53 @@ mod tests {
         );
         assert_eq!(parsed._token_fees_owed_0, original._token_fees_owed_0);
         assert_eq!(parsed._token_fees_owed_1, original._token_fees_owed_1);
+    }
+
+    /// Real on-chain accounts carry fields beyond the truncated structs
+    /// (PoolState is 1544 bytes vs 273 consumed; PersonalPositionState 281 vs
+    /// 145). Parsing must tolerate those trailing bytes — `try_from_slice`
+    /// would reject every mainnet account.
+    #[test]
+    fn parse_tolerates_trailing_account_tail() {
+        let pool = RaydiumPool {
+            _bump: [1u8],
+            _amm_config: Pubkey::new_unique(),
+            _owner: Pubkey::new_unique(),
+            _token_mint_0: Pubkey::new_unique(),
+            _token_mint_1: Pubkey::new_unique(),
+            _token_vault_0: Pubkey::new_unique(),
+            _token_vault_1: Pubkey::new_unique(),
+            _observation_key: Pubkey::new_unique(),
+            _mint_decimals_0: 9,
+            _mint_decimals_1: 6,
+            _tick_spacing: 64,
+            _liquidity: 42u128,
+            sqrt_price_x64: 1u128 << 64,
+            tick_current: 100,
+        };
+        let mut data = vec![0u8; 8];
+        pool.serialize(&mut data).expect("serialize");
+        // Pad to the real PoolState account size.
+        data.resize(1544, 0xAA);
+        let parsed = parse_pool(&data).expect("parse_pool must tolerate the account tail");
+        assert_eq!(parsed.tick_current, 100);
+
+        let position = RaydiumPosition {
+            _bump: [1u8],
+            _nft_mint: Pubkey::new_unique(),
+            pool_id: Pubkey::new_unique(),
+            tick_lower_index: -64,
+            tick_upper_index: 64,
+            liquidity: 7u128,
+            _fee_growth_inside_0_last_x64: 0,
+            _fee_growth_inside_1_last_x64: 0,
+            _token_fees_owed_0: 0,
+            _token_fees_owed_1: 0,
+        };
+        let mut data = vec![0u8; 8];
+        position.serialize(&mut data).expect("serialize");
+        data.resize(281, 0xAA);
+        let parsed = parse_position(&data).expect("parse_position must tolerate the account tail");
+        assert_eq!(parsed.tick_upper_index, 64);
     }
 }

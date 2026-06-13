@@ -1,17 +1,26 @@
 //! DB-mode backtest: replays real `pool_ticks` rows chronologically,
-//! computing fees from `fee_growth_global_a` deltas and IL via CLMM math.
+//! computing fees from `fee_growth_global_*` deltas and IL via CLMM math.
 //!
 //! Produces the same `BacktestResult` schema as the GBM `backtest::run()`
 //! so both modes share a single display / reporting path.
 //!
+//! # Units
+//! `pool_ticks` rows are raw on-chain values (tick_current, Q64.64
+//! sqrt_price), while CLI inputs (entry/lower/upper) are human "UI" prices.
+//! Range/tick comparisons run in the raw domain; IL, fees and reported
+//! prices run in the UI domain via `decimals_a`/`decimals_b`.
+//!
 //! # Fee approximation (documented)
 //! Exact fee_growth_inside requires per-tick-array data not stored in
-//! `pool_ticks`. This implementation uses a liquidity-share approximation:
+//! `pool_ticks`; instead we approximate with the global growth delta
+//! (overstates fees for the time the position was out of range —
+//! T-03-09 accepted risk). Per the Q64.64 convention (see `math::fees`),
+//! `fee_growth_global` is already per-unit-liquidity, so:
 //!
-//!   fees_step = (fee_growth_delta_a * position_liquidity / pool_liquidity)
-//!               / 2^64   (de-scaling X64 fixed-point)
+//!   fees_step(raw token) = fee_growth_delta * position_liquidity / 2^64
 //!
-//! This is an intentional, documented approximation (T-03-09 accepted risk).
+//! which is then decimal-adjusted and (for token A) priced into token-B
+//! "USD" terms.
 
 use anyhow::{Result, bail};
 
@@ -38,6 +47,11 @@ pub struct DbBacktestInput {
     pub tick_spacing: i32,
     /// Liquidity units held by this position (operator-supplied at CLI layer).
     pub position_liquidity: u128,
+    /// Token A mint decimals (e.g. SOL = 9). Bridges the UI-price CLI inputs
+    /// and the raw on-chain tick/sqrt_price domain stored in `pool_ticks`.
+    pub decimals_a: u8,
+    /// Token B mint decimals (e.g. USDC = 6).
+    pub decimals_b: u8,
     /// Rebalance configuration; `rebalance_out_of_range = false` disables it.
     pub rebalance_cfg: RebalanceConfig,
     /// Width factor applied to the lower bound on rebalance
@@ -71,11 +85,17 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
         bail!("run_db_backtest: empty tick stream — nothing to replay");
     }
 
-    // Derive integer tick bounds from the input price range.
-    let mut tick_lower = price_to_tick(input.price_lower, input.tick_spacing);
-    let mut tick_upper = price_to_tick(input.price_upper, input.tick_spacing);
+    // CLI prices are UI units; on-chain ticks live in the raw price domain
+    // (raw = ui / 10^(decA-decB)). Convert once for all tick-domain math.
+    let ui_factor = 10f64.powi(input.decimals_a as i32 - input.decimals_b as i32);
+    let scale_a = 10f64.powi(input.decimals_a as i32);
+    let scale_b = 10f64.powi(input.decimals_b as i32);
 
-    // Track current range boundaries in price terms (updated on rebalance).
+    // Derive integer tick bounds from the input price range (raw domain).
+    let mut tick_lower = price_to_tick(input.price_lower / ui_factor, input.tick_spacing);
+    let mut tick_upper = price_to_tick(input.price_upper / ui_factor, input.tick_spacing);
+
+    // Track current range boundaries in UI price terms (updated on rebalance).
     let mut cur_entry_price = input.entry_price;
     let mut cur_price_lower = input.price_lower;
     let mut cur_price_upper = input.price_upper;
@@ -84,8 +104,9 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     let mut total_rebalances: u32 = 0;
     let mut days_in_range: u32 = 0;
 
-    // Carry the previous fee_growth_global_a for delta computation.
+    // Carry the previous fee_growth_global_* for delta computation.
     let mut prev_fg_a: u128 = ticks[0].fee_growth_global_a;
+    let mut prev_fg_b: u128 = ticks[0].fee_growth_global_b;
 
     // Roll-up accumulators for the current UTC calendar day.
     let mut current_day_num: u32 = 0; // 1-based day counter across the tick stream
@@ -95,7 +116,8 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
     let mut day_results: Vec<DayResult> = Vec::new();
 
     for (i, t) in ticks.iter().enumerate() {
-        let price = sqrt_q64_to_price(t.sqrt_price);
+        // UI-domain price for IL/fees/reporting; tick comparisons stay raw.
+        let price = sqrt_q64_to_price(t.sqrt_price) * ui_factor;
         let day_date = t.time.date_naive();
         let in_range = t.tick_current >= tick_lower && t.tick_current <= tick_upper;
 
@@ -134,17 +156,27 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
         }
 
         // ── Fee accrual ─────────────────────────────────────────────────────
-        // Skip the very first tick (no prior reference for the delta).
-        // Guard against division by zero (T-03-06).
+        // Skip the very first tick (no prior reference for the delta), and
+        // skip inconsistent rows where pool liquidity is zero yet growth
+        // moved (T-03-06).
         if i > 0 && t.liquidity > 0 {
-            let delta = fee_growth_delta(prev_fg_a, t.fee_growth_global_a);
-            // X64 fixed-point de-scaling: divide by 2^64.
             const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0_f64;
-            let share = input.position_liquidity as f64 / t.liquidity as f64;
-            let fees_step = (delta as f64 / TWO_POW_64) * share;
+            // fee_growth_global is ALREADY per-unit-liquidity (Q64.64):
+            // position fees = delta * position_liquidity >> 64 (math::fees).
+            // Dividing by pool liquidity again would understate fees by a
+            // factor of ~1e9..1e12. f64 keeps sub-unit raw amounts that the
+            // u64 fixed-point helper would floor away per step.
+            let pos_l = input.position_liquidity as f64;
+            let delta_a = fee_growth_delta(prev_fg_a, t.fee_growth_global_a);
+            let delta_b = fee_growth_delta(prev_fg_b, t.fee_growth_global_b);
+            let fees_a_raw = (delta_a as f64 / TWO_POW_64) * pos_l;
+            let fees_b_raw = (delta_b as f64 / TWO_POW_64) * pos_l;
+            // Raw token units → UI units → token-B ("USD") terms.
+            let fees_step = fees_a_raw / scale_a * price + fees_b_raw / scale_b;
             cumulative_fees += fees_step;
         }
         prev_fg_a = t.fee_growth_global_a;
+        prev_fg_b = t.fee_growth_global_b;
 
         // ── Rebalance signal ────────────────────────────────────────────────
         let il_frac = compute_il(cur_entry_price, price, cur_price_lower, cur_price_upper);
@@ -162,17 +194,18 @@ pub fn run_db_backtest(input: DbBacktestInput, ticks: &[PoolTickRow]) -> Result<
         if matches!(signal, RebalanceDecision::Rebalance { .. }) {
             total_rebalances += 1;
             // Re-centre range around current price using the configured factors.
+            // Prices are UI-domain; tick bounds convert back to raw.
             cur_entry_price = price;
             cur_price_lower = (price * input.range_factor_lower).max(1e-9);
             cur_price_upper = price * input.range_factor_upper;
-            tick_lower = price_to_tick(cur_price_lower, input.tick_spacing);
-            tick_upper = price_to_tick(cur_price_upper, input.tick_spacing);
+            tick_lower = price_to_tick(cur_price_lower / ui_factor, input.tick_spacing);
+            tick_upper = price_to_tick(cur_price_upper / ui_factor, input.tick_spacing);
         }
     }
 
     // ── Flush the final day ─────────────────────────────────────────────────
     let last = ticks.last().unwrap(); // safe: non-empty checked above
-    let final_price = sqrt_q64_to_price(last.sqrt_price);
+    let final_price = sqrt_q64_to_price(last.sqrt_price) * ui_factor;
     let final_in_range = last.tick_current >= tick_lower && last.tick_current <= tick_upper;
 
     if final_in_range {
@@ -264,6 +297,10 @@ mod tests {
             fee_rate_bps: 5.0,
             tick_spacing: 64,
             position_liquidity: 100,
+            // Zero decimals → ui_factor = scale_a = scale_b = 1, so test
+            // prices/amounts are simultaneously raw and UI.
+            decimals_a: 0,
+            decimals_b: 0,
             rebalance_cfg: RebalanceConfig {
                 rebalance_out_of_range: false,
                 near_edge_ticks: 0,
@@ -327,9 +364,10 @@ mod tests {
 
     #[test]
     fn fee_accrual_basic() {
-        // Two ticks same day: fee_growth_global_a goes 100 → 200,
-        // pool_liquidity = 1000, position_liquidity = 100 → share = 0.1
-        // delta = 100, fees_step = (100 / 2^64) * 0.1
+        // Two ticks same day: fee_growth_global_a goes 100 → 200.
+        // fee_growth_global is per-unit-liquidity (Q64.64), so position fees
+        // = delta * position_liquidity / 2^64 — pool liquidity must NOT
+        // divide the result again. price = 1.0, decimals 0/0.
         let sqrt_price_at_1 = 1u128 << 64;
         let ticks = vec![
             make_tick(0, 0, sqrt_price_at_1, 1000, 100),
@@ -338,7 +376,7 @@ mod tests {
         let input = default_input(); // position_liquidity = 100
         let result = run_db_backtest(input, &ticks).unwrap();
 
-        let expected_fees = (100_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (100_f64 / 18_446_744_073_709_551_616.0_f64) * 100.0;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-20,
             "expected fees ~{:.2e}, got {:.2e}",
@@ -359,7 +397,7 @@ mod tests {
         let result = run_db_backtest(input, &ticks).unwrap();
 
         // delta = wrapping_sub(5, u128::MAX) = 6
-        let expected_fees = (6_f64 / 18_446_744_073_709_551_616.0_f64) * 0.1;
+        let expected_fees = (6_f64 / 18_446_744_073_709_551_616.0_f64) * 100.0;
         assert!(
             (result.total_fees_usd - expected_fees).abs() < 1e-30,
             "expected wrapping fees ~{:.2e}, got {:.2e}",
@@ -495,6 +533,8 @@ mod tests {
             fee_rate_bps: 5.0,
             tick_spacing: 64,
             position_liquidity: 100, // 100/10_000 = 1% of pool
+            decimals_a: 0,
+            decimals_b: 0,
             rebalance_cfg: RebalanceConfig {
                 rebalance_out_of_range: false,
                 near_edge_ticks: 0,
@@ -556,6 +596,8 @@ mod tests {
             fee_rate_bps: 5.0,
             tick_spacing: 64,
             position_liquidity: 50,
+            decimals_a: 0,
+            decimals_b: 0,
             rebalance_cfg: RebalanceConfig {
                 rebalance_out_of_range: false,
                 near_edge_ticks: 0,
@@ -613,6 +655,8 @@ mod tests {
             fee_rate_bps: 10.0,
             tick_spacing: 8,
             position_liquidity: 200,
+            decimals_a: 0,
+            decimals_b: 0,
             rebalance_cfg: RebalanceConfig {
                 rebalance_out_of_range: false,
                 near_edge_ticks: 0,

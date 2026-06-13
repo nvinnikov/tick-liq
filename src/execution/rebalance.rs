@@ -15,17 +15,33 @@ pub struct RebalancePlan {
     pub new_tick_upper: i32,
 }
 
-/// Build a centered-rebalance plan. The new range is the old range widened by
-/// `tick_spacing * 10` on each side. Pure function — no I/O.
+/// Build a centered-rebalance plan: the old range's width is preserved and
+/// re-centered on `current_tick`, with both bounds aligned to `tick_spacing`
+/// so the new range always contains the current price. Pure function — no I/O.
 pub fn build_rebalance_plan(
     position_mint: &str,
+    current_tick: i32,
     tick_lower: i32,
     tick_upper: i32,
     tick_spacing: i32,
 ) -> RebalancePlan {
-    let widen = tick_spacing.saturating_mul(10);
-    let new_tick_lower = tick_lower.saturating_sub(widen);
-    let new_tick_upper = tick_upper.saturating_add(widen);
+    let spacing = tick_spacing.max(1);
+    let width = tick_upper.saturating_sub(tick_lower).max(spacing);
+    let half = width / 2;
+
+    // Floor-align to tick_spacing (Euclidean so negative ticks align down).
+    let align = |t: i32| -> i32 { t - t.rem_euclid(spacing) };
+
+    let mut new_tick_lower = align(current_tick.saturating_sub(half));
+    let mut new_tick_upper = new_tick_lower.saturating_add(width);
+
+    // Guarantee the current tick is strictly inside [lower, upper].
+    if new_tick_upper <= current_tick {
+        new_tick_upper = align(current_tick).saturating_add(spacing);
+    }
+    if new_tick_lower > current_tick {
+        new_tick_lower = align(current_tick);
+    }
 
     RebalancePlan {
         position_mint: position_mint.to_string(),
@@ -59,10 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn widens_range_by_ten_tick_spacings() {
-        let plan = build_rebalance_plan("MINT", 100, 200, 8);
-        assert_eq!(plan.new_tick_lower, 20);
-        assert_eq!(plan.new_tick_upper, 280);
+    fn centers_preserved_width_on_current_tick() {
+        // Old range [100, 200] (width 100), price moved to tick 1000.
+        let plan = build_rebalance_plan("MINT", 1000, 100, 200, 8);
+        assert_eq!(plan.new_tick_upper - plan.new_tick_lower, 100);
+        assert!(plan.new_tick_lower <= 1000 && 1000 <= plan.new_tick_upper);
+        assert_eq!(plan.new_tick_lower.rem_euclid(8), 0);
         assert_eq!(plan.close_ix_count, 1);
         assert_eq!(plan.collect_ix_count, 1);
         assert_eq!(plan.open_ix_count, 1);
@@ -70,16 +88,30 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_price_is_recaptured() {
+        // The pre-fix behavior (widen old range by 10*spacing) left tick 5000
+        // outside the proposed range for old range [0, 1000], spacing 64.
+        let plan = build_rebalance_plan("MINT", 5000, 0, 1000, 64);
+        assert!(
+            plan.new_tick_lower <= 5000 && 5000 <= plan.new_tick_upper,
+            "current tick must be inside the new range: [{}, {}]",
+            plan.new_tick_lower,
+            plan.new_tick_upper
+        );
+        assert_eq!(plan.new_tick_upper - plan.new_tick_lower, 1000);
+    }
+
+    #[test]
     fn handles_negative_ticks() {
-        let plan = build_rebalance_plan("MINT", -500, -100, 10);
-        assert_eq!(plan.new_tick_lower, -600);
-        assert_eq!(plan.new_tick_upper, 0);
+        let plan = build_rebalance_plan("MINT", -300, -500, -100, 10);
+        assert!(plan.new_tick_lower <= -300 && -300 <= plan.new_tick_upper);
+        assert_eq!(plan.new_tick_upper - plan.new_tick_lower, 400);
+        assert_eq!(plan.new_tick_lower.rem_euclid(10), 0);
     }
 
     #[test]
     fn saturates_on_extreme_ticks() {
-        let plan = build_rebalance_plan("MINT", i32::MIN + 5, i32::MAX - 5, 1000);
-        assert_eq!(plan.new_tick_lower, i32::MIN);
-        assert_eq!(plan.new_tick_upper, i32::MAX);
+        let plan = build_rebalance_plan("MINT", 0, i32::MIN + 5, i32::MAX - 5, 1000);
+        assert!(plan.new_tick_lower <= 0 && 0 <= plan.new_tick_upper);
     }
 }

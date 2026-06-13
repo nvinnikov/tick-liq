@@ -35,8 +35,8 @@ pub fn compute_greeks_from_prices(
     // delta = -L / (2 * sqrt(P) * P)
     let delta = -l / (2.0 * sqrt_p * price);
 
-    // gamma = L / (2 * P^(5/2))
-    let gamma = l / (2.0 * price * price * sqrt_p);
+    // gamma = d(delta)/dP = 3L / (4 * P^(5/2))
+    let gamma = 3.0 * l / (4.0 * price * price * sqrt_p);
 
     Greeks { delta, gamma }
 }

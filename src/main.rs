@@ -196,6 +196,12 @@ enum Commands {
         /// Position liquidity units held (required in DB mode)
         #[arg(long, default_value_t = 0u64)]
         position_liquidity: u64,
+        /// Token A mint decimals (DB mode; bridges UI prices and raw ticks)
+        #[arg(long, default_value_t = 9u8)]
+        decimals_a: u8,
+        /// Token B mint decimals (DB mode)
+        #[arg(long, default_value_t = 6u8)]
+        decimals_b: u8,
         /// Ticks from range boundary that trigger near-edge rebalance (DB mode; 0 = off)
         #[arg(long, default_value_t = 0i32)]
         near_edge_ticks: i32,
@@ -270,12 +276,21 @@ async fn main() -> Result<()> {
                     let symbol_a = rpc.fetch_token_symbol(&pool._token_mint_a);
                     let symbol_b = rpc.fetch_token_symbol(&pool._token_mint_b);
 
-                    use analytics::greeks::sqrt_q64_to_price;
-                    let price_current = sqrt_q64_to_price(pool.sqrt_price);
-                    let price_lower =
-                        sqrt_q64_to_price(tick_index_to_sqrt_price(pos.tick_lower_index));
-                    let price_upper =
-                        sqrt_q64_to_price(tick_index_to_sqrt_price(pos.tick_upper_index));
+                    // UI prices: decimal-adjusted so they share a unit space with
+                    // --entry-price, the entry-price cache and the scaled amounts.
+                    use analytics::greeks::sqrt_q64_to_ui_price;
+                    let price_current =
+                        sqrt_q64_to_ui_price(pool.sqrt_price, decimals_a, decimals_b);
+                    let price_lower = sqrt_q64_to_ui_price(
+                        tick_index_to_sqrt_price(pos.tick_lower_index),
+                        decimals_a,
+                        decimals_b,
+                    );
+                    let price_upper = sqrt_q64_to_ui_price(
+                        tick_index_to_sqrt_price(pos.tick_upper_index),
+                        decimals_a,
+                        decimals_b,
+                    );
 
                     let in_range = pool.tick_current_index >= pos.tick_lower_index
                         && pool.tick_current_index <= pos.tick_upper_index;
@@ -299,22 +314,19 @@ async fn main() -> Result<()> {
                         pos.tick_upper_index,
                     );
 
-                    let accrued_a = analytics::pnl::compute_accrued_fees(
-                        pool.fee_growth_global_a,
-                        pos.fee_growth_checkpoint_a,
-                        pos.liquidity,
-                    );
-                    let accrued_b = analytics::pnl::compute_accrued_fees(
-                        pool.fee_growth_global_b,
-                        pos.fee_growth_checkpoint_b,
-                        pos.liquidity,
-                    );
-
+                    // Fees: report on-chain fee_owed only. pos.fee_growth_checkpoint_*
+                    // is a fee_growth_INSIDE snapshot — pairing it with
+                    // fee_growth_global in compute_accrued_fees is the "Bug 2"
+                    // protocol mismatch (see the watch arm) that yields garbage.
+                    // A one-shot command has no session baseline, and computing
+                    // real fee_growth_inside needs tick-array data, so until
+                    // that lands the collectible (possibly stale) owed amount
+                    // is the only honest figure.
                     let scale_a = 10f64.powi(decimals_a as i32);
                     let scale_b = 10f64.powi(decimals_b as i32);
 
-                    let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
-                        + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+                    let fees_usd = pos.fee_owed_a as f64 / scale_a * price_current
+                        + pos.fee_owed_b as f64 / scale_b;
 
                     // Resolve entry price: CLI flag takes precedence, then cache, then 0.
                     let price_entry = if let Some(ep) = entry_price {
@@ -380,12 +392,24 @@ async fn main() -> Result<()> {
 
                     use orca_whirlpools_core::tick_index_to_sqrt_price;
 
-                    let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price_x64);
-                    let price_lower = analytics::greeks::sqrt_q64_to_price(
-                        tick_index_to_sqrt_price(pos.tick_lower_index),
+                    // Raydium PoolState carries the mint decimals directly.
+                    let decimals_a: u8 = pool._mint_decimals_0;
+                    let decimals_b: u8 = pool._mint_decimals_1;
+
+                    let price_current = analytics::greeks::sqrt_q64_to_ui_price(
+                        pool.sqrt_price_x64,
+                        decimals_a,
+                        decimals_b,
                     );
-                    let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    let price_lower = analytics::greeks::sqrt_q64_to_ui_price(
+                        tick_index_to_sqrt_price(pos.tick_lower_index),
+                        decimals_a,
+                        decimals_b,
+                    );
+                    let price_upper = analytics::greeks::sqrt_q64_to_ui_price(
                         tick_index_to_sqrt_price(pos.tick_upper_index),
+                        decimals_a,
+                        decimals_b,
                     );
 
                     let in_range = pool.tick_current >= pos.tick_lower_index
@@ -430,10 +454,6 @@ async fn main() -> Result<()> {
                         price_upper,
                     );
 
-                    // TODO: Raydium decimals should be fetched from mint metadata;
-                    // hardcoded to 9 (SOL) / 6 (USDC) as a temporary approximation.
-                    let decimals_a: u8 = 9;
-                    let decimals_b: u8 = 6;
                     let scale_a = 10f64.powi(decimals_a as i32);
                     let scale_b = 10f64.powi(decimals_b as i32);
 
@@ -545,6 +565,13 @@ async fn main() -> Result<()> {
             let fee_growth_baseline_a: u128 = init_pool.fee_growth_global_a;
             let fee_growth_baseline_b: u128 = init_pool.fee_growth_global_b;
 
+            // Real token decimals — fetched once at watch start. Every price,
+            // fee and P&L figure below (including rows persisted to Postgres
+            // and the risk-gate inputs) depends on these; hardcoding SOL/USDC
+            // 9/6 silently corrupts all of it for any other pair.
+            let decimals_a = rpc.fetch_mint_decimals(&init_pool._token_mint_a)?;
+            let decimals_b = rpc.fetch_mint_decimals(&init_pool._token_mint_b)?;
+
             // Validate entry price if provided
             if let Some(ep) = entry_price {
                 if *ep <= 0.0 {
@@ -566,8 +593,11 @@ async fn main() -> Result<()> {
             // cache::load_entry_price returns None on first run because nothing
             // wrote the cache yet, causing IL to fall back to current price → IL=0.
             // Write it now (at watch start) so every subsequent tick can load it.
-            let entry_price_at_start =
-                analytics::greeks::sqrt_q64_to_price(init_pool.sqrt_price) * 10f64.powi(9 - 6);
+            let entry_price_at_start = analytics::greeks::sqrt_q64_to_ui_price(
+                init_pool.sqrt_price,
+                decimals_a,
+                decimals_b,
+            );
             if cache::load_entry_price(mint).is_none() {
                 if let Err(e) = cache::save_entry_price(mint, entry_price_at_start) {
                     tracing::warn!(error = %e, "failed to persist entry price to cache");
@@ -638,12 +668,12 @@ async fn main() -> Result<()> {
                     let mut risk_state =
                         strategy::risk_monitor::RiskMonitor::load_or_init(pg, &pool_addr).await?;
 
-                    // Log startup halt/pause state before reset so the operator
-                    // knows stale flags were detected and are now being cleared (D-12).
+                    // Log startup halt/pause state so the operator knows which
+                    // persistent flags carry over into this session (D-12).
                     if risk_state.halt_flag {
-                        tracing::warn!(
+                        tracing::error!(
                             pool = %pool_addr,
-                            "risk: halt_flag was active from previous session -- clearing for new session"
+                            "risk: halt_flag active from previous session -- rebalancing remains halted until cleared via SQL (D-12)"
                         );
                     }
                     if risk_state.pause_flag {
@@ -659,16 +689,17 @@ async fn main() -> Result<()> {
                         );
                     }
 
-                    // Reset session-volatile fields so stale peak_pnl / halt_flag from
-                    // a prior session do not produce an instant 100% drawdown halt on
-                    // restart. operator_pause is intentionally preserved.
+                    // Reset session-volatile fields so a stale peak_pnl from a
+                    // prior session does not read as an instant 100% drawdown.
+                    // halt_flag is NOT cleared: a drawdown halt is a kill-switch
+                    // that must survive restarts until the operator clears it
+                    // via SQL (D-12), same as operator_pause.
                     strategy::risk_monitor::RiskMonitor::reset_session(pg, &pool_addr).await?;
                     risk_state.peak_pnl = 0.0;
-                    risk_state.halt_flag = false;
                     risk_state.current_drawdown_pct = 0.0;
                     tracing::info!(
                         pool = %pool_addr,
-                        "risk: session reset -- peak_pnl and halt_flag cleared for new session"
+                        "risk: session reset -- peak_pnl/drawdown cleared (halt_flag preserved)"
                     );
 
                     // Derive Drift User PDA from keypair if available (for RISK-03).
@@ -798,22 +829,42 @@ async fn main() -> Result<()> {
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
             let mint_str = mint.clone();
-            let on_notify = Box::new(move |json: serde_json::Value| {
+
+            // Tick pipeline: the WS callback must stay cheap — anything slow
+            // inside it (blocking RPC, DB writes, the Telegram approval wait)
+            // parks the WS select loop, starving ping/pong until the server
+            // drops the connection. Notifications flow through a bounded
+            // channel to a dedicated processor task; if the processor falls
+            // behind, the oldest pending update is the one we skip.
+            let (tick_tx, mut tick_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
+
+            let processor = tokio::spawn(async move {
+                // One RPC client for the whole session (constructing a fresh
+                // reqwest client per tick costs a TCP+TLS handshake each time).
                 let rpc_inner = rpc::SolanaRpc::with_timeout(&rpc_url, rpc_timeout);
+                while let Some(json) = tick_rx.recv().await {
+                    // `async` block so the body's per-tick `return`s keep their
+                    // old "skip this tick" semantics.
+                    #[allow(clippy::redundant_async_block)]
+                    async {
                 print!("\x1B[2J\x1B[1;1H");
                 println!(
                     "[{}] Pool update received",
                     chrono::Utc::now().format("%H:%M:%S UTC")
                 );
 
-                let pool_data =
-                    match rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::warn!("Failed to fetch pool data: {}", e);
-                            return;
-                        }
-                    };
+                // The solana RpcClient is blocking; block_in_place keeps it
+                // from starving this worker's peers. It no longer stalls the
+                // WS loop — we are on the processor task here.
+                let pool_data = match tokio::task::block_in_place(|| {
+                    rpc_inner.fetch_account_checked(&pool_addr_clone, &whirlpool_program)
+                }) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch pool data: {}", e);
+                        return;
+                    }
+                };
                 let pool = match protocols::orca::parse_pool(&pool_data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -827,11 +878,9 @@ async fn main() -> Result<()> {
                 // NOTE: tick_current_index (used by should_rebalance) is NOT affected —
                 // range-boundary checks stay on-chain per D-07 + RESEARCH Pitfall 5.
                 const CEX_STALE_SECS: u64 = 30;
-                // SOL=9 decimals, USDC=6 decimals -> multiply raw sqrt_q64 price by 10^(9-6)=1000.
-                const DECIMAL_SCALE: f64 = 1000.0;
 
                 let onchain_price =
-                    analytics::greeks::sqrt_q64_to_price(pool.sqrt_price) * DECIMAL_SCALE;
+                    analytics::greeks::sqrt_q64_to_ui_price(pool.sqrt_price, decimals_a, decimals_b);
                 let price_current: f64 = {
                     use std::sync::atomic::Ordering;
                     let guard = cex_price_state_closure
@@ -873,11 +922,8 @@ async fn main() -> Result<()> {
                 println!("Liquidity: {}", pool.liquidity);
 
                 // ── Real P&L computation (SHADOW-03 / Phase 2) ─────────────────
-                // Decimals are not fetched in watch mode; use well-known values for
-                // SOL (9) / USDC (6) as a best-effort approximation (same as Raydium
-                // position command). Full decimal wiring arrives in Phase 5.
-                let scale_a = 10f64.powi(9); // SOL decimals
-                let scale_b = 10f64.powi(6); // USDC decimals
+                let scale_a = 10f64.powi(decimals_a as i32);
+                let scale_b = 10f64.powi(decimals_b as i32);
 
                 // Bug 2 fix: use fee_growth_baseline_a/b (captured at watch start) as
                 // the checkpoint instead of pos.fee_growth_checkpoint_a/b.
@@ -915,16 +961,18 @@ async fn main() -> Result<()> {
                     Err(_) => 0.0,
                 };
 
-                // BUG-qr9 fix: apply the same decimal scaling as price_current (line 770)
-                // so all four compute_il arguments share the same unit space (decimal-scaled USD).
-                // Without this, price_lower/price_upper are raw (~0.084) while entry/current
-                // are in dollars (~84), causing clamp to collapse both to the same boundary → IL ≈ 0.
-                let price_lower = analytics::greeks::sqrt_q64_to_price(
+                // BUG-qr9 fix: range bounds in the same UI unit space as
+                // entry/current — mixed units make the clamp collapse IL to ~0.
+                let price_lower = analytics::greeks::sqrt_q64_to_ui_price(
                     orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_lower_index),
-                ) * 10f64.powi(9 - 6);
-                let price_upper = analytics::greeks::sqrt_q64_to_price(
+                    decimals_a,
+                    decimals_b,
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_ui_price(
                     orca_whirlpools_core::tick_index_to_sqrt_price(pos.tick_upper_index),
-                ) * 10f64.powi(9 - 6);
+                    decimals_a,
+                    decimals_b,
+                );
                 let il_fraction = analytics::pnl::compute_il(
                     entry_price,
                     price_current,
@@ -957,14 +1005,10 @@ async fn main() -> Result<()> {
                             observed_at: now,
                         };
 
-                        // Await write_pool_tick (durability checkpoint). The callback
-                        // runs inside a tokio runtime; block_in_place lets us call
-                        // block_on without violating single-threaded executor rules.
-                        let write_result = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(storage::writer::write_pool_tick(pg, &tick))
-                        });
-                        if let Err(e) = write_result {
+                        // Await write_pool_tick (durability checkpoint). We run on
+                        // the processor task, so a plain .await no longer stalls
+                        // the WS loop.
+                        if let Err(e) = storage::writer::write_pool_tick(pg, &tick).await {
                             tracing::warn!(error = %e, "pool_ticks write failed");
                         }
 
@@ -1100,11 +1144,13 @@ async fn main() -> Result<()> {
                     // ── Telegram approval gate (TG-01, TG-02) ──────────────────
                     // When --telegram is active, send a proposal message and await
                     // /approve within the configured timeout before proceeding.
-                    // The callback is a sync Fn so async calls use block_in_place.
+                    // We run on the processor task, so the (up to
+                    // --approve-timeout-secs) wait never stalls the WS loop.
                     if let (Some(tg_bot), Some(tg_chat)) = (&telegram_bot, telegram_chat_id) {
                         // Build plan to get range_width for the proposal message.
                         let plan = execution::build_rebalance_plan(
                             &mint_str,
+                            pool.tick_current_index,
                             pos.tick_lower_index,
                             pos.tick_upper_index,
                             pool.tick_spacing as i32,
@@ -1124,60 +1170,50 @@ async fn main() -> Result<()> {
                         };
                         let chat_id = teloxide::types::ChatId(tg_chat);
 
-                        let (approved, skip_reason) = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(async {
-                                match bot::proposal::send_proposal(
-                                    tg_bot,
-                                    chat_id,
-                                    &proposal_data,
-                                    &pending_approval,
+                        let (approved, skip_reason) = match bot::proposal::send_proposal(
+                            tg_bot,
+                            chat_id,
+                            &proposal_data,
+                            &pending_approval,
+                        )
+                        .await
+                        {
+                            Ok((proposal_id, rx)) => {
+                                let approved = bot::proposal::await_approval(
+                                    rx,
+                                    approve_timeout_secs_val,
                                 )
-                                .await
-                                {
-                                    Ok((proposal_id, rx)) => {
-                                        let approved = bot::proposal::await_approval(
-                                            rx,
-                                            approve_timeout_secs_val,
-                                        )
-                                        .await;
-                                        // Remove the dead sender on timeout so a
-                                        // later /approve cannot grab it and falsely
-                                        // report execution.
-                                        bot::proposal::clear_pending(
-                                            &pending_approval,
-                                            proposal_id,
-                                        );
-                                        (approved, "timeout")
-                                    }
-                                    Err(e) => {
-                                        // Fail closed: human approval is the only
-                                        // manual control before a live rebalance, so
-                                        // a Telegram failure must skip the rebalance,
-                                        // never silently authorize it.
-                                        tracing::warn!(
-                                            error = %e,
-                                            "failed to send Telegram proposal; \
-                                             failing closed -- rebalance skipped"
-                                        );
-                                        (false, "telegram_error")
-                                    }
-                                }
-                            })
-                        });
+                                .await;
+                                // Remove the dead sender on timeout so a
+                                // later /approve cannot grab it and falsely
+                                // report execution.
+                                bot::proposal::clear_pending(&pending_approval, proposal_id);
+                                (approved, "timeout")
+                            }
+                            Err(e) => {
+                                // Fail closed: human approval is the only
+                                // manual control before a live rebalance, so
+                                // a Telegram failure must skip the rebalance,
+                                // never silently authorize it.
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to send Telegram proposal; \
+                                     failing closed -- rebalance skipped"
+                                );
+                                (false, "telegram_error")
+                            }
+                        };
 
                         if !approved {
                             // Log skip to DB (TG-02) and continue to next tick.
                             if let Some(pg) = db_pool.as_ref() {
-                                let _ = tokio::task::block_in_place(|| {
-                                    tokio::runtime::Handle::current().block_on(
-                                        storage::writer::write_approval_skip(
-                                            pg,
-                                            &pool_addr_clone,
-                                            skip_reason,
-                                            price_current,
-                                        ),
-                                    )
-                                });
+                                let _ = storage::writer::write_approval_skip(
+                                    pg,
+                                    &pool_addr_clone,
+                                    skip_reason,
+                                    price_current,
+                                )
+                                .await;
                             }
                             tracing::info!(
                                 pool = %pool_addr_clone,
@@ -1207,6 +1243,7 @@ async fn main() -> Result<()> {
                         strategy::RebalanceDecision::Rebalance { reason } => {
                             let plan = execution::build_rebalance_plan(
                                 &mint_str,
+                                pool.tick_current_index,
                                 pos.tick_lower_index,
                                 pos.tick_upper_index,
                                 pool.tick_spacing as i32,
@@ -1243,9 +1280,31 @@ async fn main() -> Result<()> {
                         storage::writer::spawn_shadow_write(pg.clone(), row);
                     }
                 }
+                    }
+                    .await;
+                }
+            });
+
+            // The WS callback only enqueues; if the processor is saturated the
+            // notification is dropped (the next one supersedes it anyway).
+            let on_notify: data::ws::NotifyFn = Box::new(move |json: serde_json::Value| {
+                if let Err(e) = tick_tx.try_send(json) {
+                    tracing::warn!("tick queue full or closed; dropping pool update: {}", e);
+                }
             });
 
             data::ws::watch_account(ws_url, pool_addr, shutdown_rx, on_notify).await;
+
+            // watch_account dropped on_notify (and with it the channel sender),
+            // so the processor exits once it drains the queue. Give in-flight
+            // DB writes a bounded grace period before letting the runtime drop.
+            match tokio::time::timeout(std::time::Duration::from_secs(5), processor).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("tick processor join error: {}", e),
+                Err(_) => {
+                    tracing::warn!("tick processor did not drain within 5s; continuing shutdown")
+                }
+            }
 
             // WR-03: graceful cleanup of background tasks before runtime drop.
             // `watch_account` returns only after the shutdown broadcast fires
@@ -1270,6 +1329,14 @@ async fn main() -> Result<()> {
             let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
 
+            let decimals_a = rpc.fetch_mint_decimals(&pool_state._token_mint_a)?;
+            let decimals_b = rpc.fetch_mint_decimals(&pool_state._token_mint_b)?;
+            // The impact math runs in the raw domain (raw price × raw
+            // liquidity → costs in raw token-B units); convert for display:
+            // prices ×10^(decA−decB), token-B costs ÷10^decB.
+            let ui_factor = 10f64.powi(decimals_a as i32 - decimals_b as i32);
+            let scale_b = 10f64.powi(decimals_b as i32);
+
             let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
 
             println!(
@@ -1293,7 +1360,10 @@ async fn main() -> Result<()> {
                 );
                 println!(
                     "  +{:.0}%  (~${:.4}): ${:.0} needed to buy  |  ${:.0} needed to sell",
-                    pct, buy.target_price, buy.usd_needed, sell.usd_needed
+                    pct,
+                    buy.target_price * ui_factor,
+                    buy.usd_needed / scale_b,
+                    sell.usd_needed / scale_b
                 );
             }
 
@@ -1332,13 +1402,26 @@ async fn main() -> Result<()> {
                 pool_state.tick_spacing as i32,
                 8,
             );
-            display::table::print_depth_histogram(&distribution, price_current);
+            // Histogram is display-only: convert bucket prices to UI units.
+            let distribution_ui: Vec<analytics::depth::LiquidityLevel> = distribution
+                .iter()
+                .map(|l| analytics::depth::LiquidityLevel {
+                    price: l.price * ui_factor,
+                    liquidity: l.liquidity,
+                })
+                .collect();
+            display::table::print_depth_histogram(&distribution_ui, price_current * ui_factor);
         }
         Commands::Impact { pool, size } => {
             let rpc = rpc::SolanaRpc::with_timeout(&cli.rpc_url, cli.rpc_timeout);
             let whirlpool_program = protocols::orca::whirlpool_program_pubkey();
             let pool_data = rpc.fetch_account_checked(pool, &whirlpool_program)?;
             let pool_state = protocols::orca::parse_pool(&pool_data)?;
+
+            let decimals_a = rpc.fetch_mint_decimals(&pool_state._token_mint_a)?;
+            let decimals_b = rpc.fetch_mint_decimals(&pool_state._token_mint_b)?;
+            let ui_factor = 10f64.powi(decimals_a as i32 - decimals_b as i32);
+            let scale_b = 10f64.powi(decimals_b as i32);
 
             let price_current = analytics::greeks::sqrt_q64_to_price(pool_state.sqrt_price);
 
@@ -1375,9 +1458,12 @@ async fn main() -> Result<()> {
                     );
 
                     // Find the bucket containing the current tick (it is the middle bucket).
-                    // Walk buckets in the buy direction (ascending price) consuming USD.
+                    // Walk buckets in the buy direction (ascending price) consuming the
+                    // trade size. The walk runs in the raw domain (raw prices × raw
+                    // liquidity → costs in raw token-B units), so convert the human-USD
+                    // --size to raw token-B once up front.
                     let mid = distribution.len() / 2;
-                    let mut remaining = *size;
+                    let mut remaining = *size * scale_b;
                     let mut final_price = price_current;
 
                     'walk: for bucket in &distribution[mid..] {
@@ -1422,14 +1508,16 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    // Fall back to constant-L approximation.
+                    // Fall back to constant-L approximation (raw domain: convert
+                    // the human-USD size to raw token-B before dividing by the
+                    // raw price).
                     tracing::warn!(
                         "tick-array fetch failed ({}); falling back to constant-L approximation",
                         e
                     );
                     let l = pool_state.liquidity as f64;
                     let sqrt_p = price_current.sqrt();
-                    let amount_a = size / price_current;
+                    let amount_a = (*size * scale_b) / price_current;
                     let inv_sqrt_target = (1.0 / sqrt_p) - (amount_a / l);
                     if inv_sqrt_target > 0.0 {
                         let p_target = 1.0 / (inv_sqrt_target * inv_sqrt_target);
@@ -1442,11 +1530,11 @@ async fn main() -> Result<()> {
             };
 
             println!("Pool:          {}", pool);
-            println!("Current price: ${:.6}", price_current);
+            println!("Current price: ${:.6}", price_current * ui_factor);
             println!("Trade size:    ${:.0}", size);
             if impact_pct.is_finite() {
                 println!("Price impact:  {:+.4}%", impact_pct);
-                println!("Price after:   ${:.6}", target_price);
+                println!("Price after:   ${:.6}", target_price * ui_factor);
             } else {
                 println!("Price impact:  > liquidity available");
             }
@@ -1479,13 +1567,22 @@ async fn main() -> Result<()> {
                 let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
                 let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
 
-                let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
-                let price_lower = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
-                    pos.tick_lower_index,
-                ));
-                let price_upper = analytics::greeks::sqrt_q64_to_price(tick_index_to_sqrt_price(
-                    pos.tick_upper_index,
-                ));
+                // UI prices: same unit space as --entry-price and the cache.
+                let price_current = analytics::greeks::sqrt_q64_to_ui_price(
+                    pool.sqrt_price,
+                    decimals_a,
+                    decimals_b,
+                );
+                let price_lower = analytics::greeks::sqrt_q64_to_ui_price(
+                    tick_index_to_sqrt_price(pos.tick_lower_index),
+                    decimals_a,
+                    decimals_b,
+                );
+                let price_upper = analytics::greeks::sqrt_q64_to_ui_price(
+                    tick_index_to_sqrt_price(pos.tick_upper_index),
+                    decimals_a,
+                    decimals_b,
+                );
 
                 let amounts = analytics::amounts::compute_token_amounts(
                     pos.liquidity,
@@ -1494,22 +1591,14 @@ async fn main() -> Result<()> {
                     pos.tick_upper_index,
                 )?;
 
-                let accrued_a = analytics::pnl::compute_accrued_fees(
-                    pool.fee_growth_global_a,
-                    pos.fee_growth_checkpoint_a,
-                    pos.liquidity,
-                );
-                let accrued_b = analytics::pnl::compute_accrued_fees(
-                    pool.fee_growth_global_b,
-                    pos.fee_growth_checkpoint_b,
-                    pos.liquidity,
-                );
-
+                // fee_owed only — pairing fee_growth_checkpoint_* (an INSIDE
+                // snapshot) with fee_growth_global is the "Bug 2" protocol
+                // mismatch; see the position arm for the full rationale.
                 let scale_a = 10f64.powi(decimals_a as i32);
                 let scale_b = 10f64.powi(decimals_b as i32);
 
-                let fees_usd = (pos.fee_owed_a + accrued_a) as f64 / scale_a * price_current
-                    + (pos.fee_owed_b + accrued_b) as f64 / scale_b;
+                let fees_usd = pos.fee_owed_a as f64 / scale_a * price_current
+                    + pos.fee_owed_b as f64 / scale_b;
 
                 // Resolve entry price: CLI flag takes precedence, then cache, then 0.
                 let price_entry = if let Some(ep) = entry_price {
@@ -1607,6 +1696,7 @@ async fn main() -> Result<()> {
 
             let plan = execution::build_rebalance_plan(
                 mint,
+                pool.tick_current_index,
                 pos.tick_lower_index,
                 pos.tick_upper_index,
                 pool.tick_spacing as i32,
@@ -1630,6 +1720,8 @@ async fn main() -> Result<()> {
             from,
             to,
             position_liquidity,
+            decimals_a,
+            decimals_b,
             near_edge_ticks,
             range_lower_factor,
             range_upper_factor,
@@ -1680,6 +1772,8 @@ async fn main() -> Result<()> {
                     fee_rate_bps: *fee_bps,
                     tick_spacing: *tick_spacing,
                     position_liquidity: *position_liquidity as u128,
+                    decimals_a: *decimals_a,
+                    decimals_b: *decimals_b,
                     rebalance_cfg: strategy::RebalanceConfig {
                         rebalance_out_of_range: *rebalance,
                         near_edge_ticks: *near_edge_ticks,
@@ -1740,15 +1834,25 @@ async fn main() -> Result<()> {
                 rpc.fetch_account_checked(&pos.whirlpool.to_string(), &whirlpool_program)?;
             let pool = protocols::orca::parse_pool(&pool_data)?;
 
-            let price_current = analytics::greeks::sqrt_q64_to_price(pool.sqrt_price);
-            let greeks = analytics::greeks::compute_greeks(
+            // The LP's delta-hedgeable exposure is its token-A leg: the
+            // position holds `amount_a` of the volatile token, so the
+            // offsetting perp notional is amount_a (UI units) × UI price.
+            // (Raw greeks delta × raw price is off by orders of magnitude —
+            // wrong units on both factors.)
+            let decimals_a = rpc.fetch_mint_decimals(&pool._token_mint_a)?;
+            let decimals_b = rpc.fetch_mint_decimals(&pool._token_mint_b)?;
+            let price_current =
+                analytics::greeks::sqrt_q64_to_ui_price(pool.sqrt_price, decimals_a, decimals_b);
+            let amounts = analytics::amounts::compute_token_amounts(
                 pos.liquidity,
                 pool.sqrt_price,
                 pos.tick_lower_index,
                 pos.tick_upper_index,
-            );
+            )?;
+            let exposure_a_ui = amounts.amount_a as f64 / 10f64.powi(decimals_a as i32);
 
-            let mut plan = execution::compute_hedge_size(greeks.delta, price_current);
+            // delta > 0 (long token A) → short perp, per compute_hedge_size.
+            let mut plan = execution::compute_hedge_size(exposure_a_ui, price_current);
             plan.position_mint = mint.clone();
             execution::print_hedge_dry_run(&plan);
         }

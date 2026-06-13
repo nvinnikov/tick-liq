@@ -4,7 +4,7 @@
 //! delegates to the pure-math greeks formulas.
 
 pub use crate::math::greeks::Greeks;
-pub use crate::math::sqrt_price::sqrt_q64_to_price;
+pub use crate::math::sqrt_price::{sqrt_q64_to_price, sqrt_q64_to_ui_price};
 
 use crate::math::greeks::compute_greeks_from_prices;
 

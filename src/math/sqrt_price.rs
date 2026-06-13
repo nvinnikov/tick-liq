@@ -14,6 +14,18 @@ pub fn sqrt_q64_to_price(sqrt_price_q64: u128) -> f64 {
     sqrt_p * sqrt_p
 }
 
+/// Convert a Q64.64 sqrt_price to a human-unit ("UI") price: token B per
+/// token A with both sides decimal-adjusted.
+///
+/// `sqrt_q64_to_price` yields the *raw* price (token-B base units per
+/// token-A base unit); multiplying by `10^(decimals_a - decimals_b)`
+/// converts it to the price humans quote (e.g. SOL/USDC 9/6: raw 0.084 →
+/// $84). Every display, IL, P&L or entry-price comparison must use the same
+/// unit space — mixing raw and UI prices is the BUG-qr9 class of defect.
+pub fn sqrt_q64_to_ui_price(sqrt_price_q64: u128, decimals_a: u8, decimals_b: u8) -> f64 {
+    sqrt_q64_to_price(sqrt_price_q64) * 10f64.powi(decimals_a as i32 - decimals_b as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

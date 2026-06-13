@@ -62,9 +62,9 @@ pub struct WhirlpoolPosition {
     pub liquidity: u128,
     pub tick_lower_index: i32,
     pub tick_upper_index: i32,
-    pub fee_growth_checkpoint_a: u128,
+    pub _fee_growth_checkpoint_a: u128,
     pub fee_owed_a: u64,
-    pub fee_growth_checkpoint_b: u128,
+    pub _fee_growth_checkpoint_b: u128,
     pub fee_owed_b: u64,
     // reward_infos omitted (tail fields).
 }

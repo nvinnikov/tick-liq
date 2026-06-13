@@ -92,12 +92,12 @@
       "tolerance_abs": 0.0
     },
     {
-      "description": "I3: price drops to lower bound, entry at midpoint",
+      "description": "I3: price drops to lower bound, entry at midpoint (V_LP(80)=1.641304L vs V_HODL(80)=1.752761L)",
       "price_entry": 100.0,
       "price_current": 80.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.006192010,
+      "expected_il": -0.063588933,
       "tolerance_abs": 1e-7
     },
     {
@@ -106,25 +106,25 @@
       "price_current": 120.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.004140805,
+      "expected_il": -0.043353495,
       "tolerance_abs": 1e-7
     },
     {
-      "description": "I5: price far below range -> clamped to lower, same IL as I3",
+      "description": "I5: price far below range -> LP frozen all-token-A at the lower bound while HODL keeps its token-B leg, so IL keeps growing past I3",
       "price_entry": 100.0,
       "price_current": 10.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.006192010,
+      "expected_il": -0.820482326,
       "tolerance_abs": 1e-7
     },
     {
-      "description": "I6: price far above range -> clamped to upper, same IL as I4",
+      "description": "I6: price far above range -> LP frozen all-token-B at the upper bound while HODL keeps its token-A leg",
       "price_entry": 100.0,
       "price_current": 1000.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.004140805,
+      "expected_il": -0.794221075,
       "tolerance_abs": 1e-7
     }
   ],
@@ -136,7 +136,7 @@
       "tick_lower": -100,
       "tick_upper": 100,
       "expected_delta": -500000.0,
-      "expected_gamma": 500000.0,
+      "expected_gamma": 750000.0,
       "tolerance_rel": 1e-9
     },
     {
@@ -176,7 +176,7 @@
       "tick_lower": -100,
       "tick_upper": 100,
       "expected_delta": -1000000.0,
-      "expected_gamma": 1000000.0,
+      "expected_gamma": 1500000.0,
       "tolerance_rel": 1e-9
     },
     {
@@ -186,7 +186,7 @@
       "tick_lower": -1000,
       "tick_upper": 1000,
       "expected_delta": -500000.0,
-      "expected_gamma": 500000.0,
+      "expected_gamma": 750000.0,
       "tolerance_rel": 1e-9
     }
   ]

@@ -168,16 +168,19 @@ impl RiskMonitor {
 
     /// Reset volatile session state so a fresh watch session starts with a clean slate.
     ///
-    /// Zeroes `peak_pnl`, `halt_flag`, and `current_drawdown_pct`; preserves
-    /// `operator_pause` (it is intentional and operator-controlled).
+    /// Zeroes `peak_pnl` and `current_drawdown_pct` (a stale peak would
+    /// otherwise read as an instant 100% drawdown on restart). `halt_flag`
+    /// is deliberately NOT touched: per D-12 a drawdown halt must survive
+    /// restarts until the operator clears it via SQL, exactly like
+    /// `operator_pause`.
     ///
-    /// Persists immediately via an UPDATE so the next restart also starts clean.
-    /// Call this immediately after `load_or_init` at watch-session startup.
+    /// Persists immediately via an UPDATE. Call this immediately after
+    /// `load_or_init` at watch-session startup.
     pub async fn reset_session(pool: &PgPool, pool_address: &str) -> anyhow::Result<()> {
         pool.execute(
             query(
                 "UPDATE risk_state \
-                 SET peak_pnl = 0.0, halt_flag = FALSE, \
+                 SET peak_pnl = 0.0, \
                      current_drawdown_pct = 0.0, updated_at = NOW() \
                  WHERE pool_address = $1",
             )

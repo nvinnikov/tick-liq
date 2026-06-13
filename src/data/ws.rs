@@ -112,7 +112,10 @@ async fn run_session(
         };
     }
 
-    info!("WS watch: subscribed to {}", account);
+    info!(
+        "WS watch: subscribe request sent for {} (awaiting confirmation)",
+        account
+    );
 
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.tick().await; // consume the immediate first tick
@@ -121,16 +124,6 @@ async fn run_session(
     let mut pong_deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        // Check pong timeout.
-        if let Some(deadline) = pong_deadline {
-            if tokio::time::Instant::now() >= deadline {
-                return SessionResult::Reconnect {
-                    reason: "pong timeout".to_string(),
-                    connected: true,
-                };
-            }
-        }
-
         tokio::select! {
             biased;
 
@@ -139,12 +132,31 @@ async fn run_session(
                 return SessionResult::Shutdown;
             }
 
-            // Periodic ping.
+            // Pong watchdog. Must be a select arm: on a silently dead
+            // connection `read.next()` never resolves, and a loop-top check
+            // would only run after the next ping tick had already overwritten
+            // the deadline — i.e. the timeout could never fire.
+            _ = async {
+                match pong_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if pong_deadline.is_some() => {
+                return SessionResult::Reconnect {
+                    reason: "pong timeout".to_string(),
+                    connected: true,
+                };
+            }
+
+            // Periodic ping. Do not overwrite an outstanding pong deadline —
+            // the watchdog above must keep timing the *oldest* unanswered ping.
             _ = ping_interval.tick() => {
                 if let Err(e) = write.send(Message::Ping(vec![])).await {
                     return SessionResult::Reconnect { reason: format!("ping send error: {e}"), connected: true };
                 }
-                pong_deadline = Some(tokio::time::Instant::now() + PONG_TIMEOUT);
+                if pong_deadline.is_none() {
+                    pong_deadline = Some(tokio::time::Instant::now() + PONG_TIMEOUT);
+                }
             }
 
             // Incoming WS message.
@@ -171,12 +183,18 @@ async fn run_session(
                         return SessionResult::Reconnect { reason: "server closed connection".to_string(), connected: true };
                     }
                     Some(Ok(Message::Text(text))) => {
-                        handle_text(&text, on_notify);
+                        if let Some(reason) = handle_text(&text, on_notify) {
+                            return SessionResult::Reconnect { reason, connected: true };
+                        }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
                         // Try treating binary as UTF-8 text; skip if it isn't.
                         match std::str::from_utf8(&bytes) {
-                            Ok(text) => handle_text(text, on_notify),
+                            Ok(text) => {
+                                if let Some(reason) = handle_text(text, on_notify) {
+                                    return SessionResult::Reconnect { reason, connected: true };
+                                }
+                            }
                             Err(_) => warn!("WS watch: ignoring non-UTF-8 binary frame"),
                         }
                     }
@@ -190,21 +208,38 @@ async fn run_session(
 }
 
 /// Parse a text frame and invoke the callback if it is an `accountNotification`.
-/// All errors are logged and swallowed — never propagate out of the message loop.
-fn handle_text(text: &str, on_notify: &NotifyFn) {
+///
+/// Returns `Some(reason)` when the frame is a JSON-RPC **error** reply to our
+/// subscribe request (`id == 1`) so the session reconnects instead of idling
+/// forever on a rejected subscription. Malformed frames are logged and
+/// swallowed — they never propagate out of the message loop.
+fn handle_text(text: &str, on_notify: &NotifyFn) -> Option<String> {
     let json: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
             warn!("WS watch: failed to parse JSON ({}), skipping frame", e);
-            return;
+            return None;
         }
     };
 
-    if json.get("method").and_then(|v| v.as_str()) != Some("accountNotification") {
-        return;
+    if json.get("method").and_then(|v| v.as_str()) == Some("accountNotification") {
+        on_notify(json);
+        return None;
     }
 
-    on_notify(json);
+    // Reply to our accountSubscribe request: a rejection (rate limit,
+    // subscription cap, method disabled) must not be silently dropped.
+    if json.get("id").and_then(|v| v.as_i64()) == Some(1) {
+        if let Some(err) = json.get("error") {
+            return Some(format!("subscribe rejected: {err}"));
+        }
+        info!(
+            "WS watch: subscription confirmed (id {})",
+            json.get("result")
+                .map_or_else(|| "?".to_string(), |r| r.to_string())
+        );
+    }
+    None
 }
 
 #[cfg(test)]
@@ -220,7 +255,7 @@ mod tests {
         });
 
         // Should not panic or call callback.
-        handle_text("not json at all {{{", &cb);
+        assert_eq!(handle_text("not json at all {{{", &cb), None);
         assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
@@ -233,8 +268,30 @@ mod tests {
         });
 
         let msg = r#"{"jsonrpc":"2.0","id":1,"result":42}"#;
-        handle_text(msg, &cb);
+        assert_eq!(handle_text(msg, &cb), None);
         assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// A JSON-RPC error reply to the subscribe request (id 1) must surface a
+    /// reconnect reason instead of being silently dropped — otherwise a
+    /// rejected subscription leaves the session "healthy" with zero data.
+    #[test]
+    fn handle_text_surfaces_subscribe_error() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        let cb: NotifyFn = Box::new(move |_| {
+            called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let msg =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"subscription limit"}}"#;
+        let reason = handle_text(msg, &cb).expect("subscribe error must produce a reason");
+        assert!(reason.contains("subscribe rejected"), "got: {reason}");
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Errors on other ids (not our subscribe) are ignored.
+        let other = r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"x"}}"#;
+        assert_eq!(handle_text(other, &cb), None);
     }
 
     #[test]
@@ -246,7 +303,7 @@ mod tests {
         });
 
         let msg = r#"{"jsonrpc":"2.0","method":"accountNotification","params":{}}"#;
-        handle_text(msg, &cb);
+        assert_eq!(handle_text(msg, &cb), None);
         assert!(called.load(std::sync::atomic::Ordering::SeqCst));
     }
 

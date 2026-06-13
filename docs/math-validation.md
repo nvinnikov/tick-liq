@@ -34,9 +34,15 @@ rather than an independent second implementation.
 `compute_il` and `compute_greeks` are hand-written in Rust against the formulas in
 `CLAUDE.md` (see "Math Reference" section):
 
-- IL uses the standard LP/HODL ratio `V_lp/V_hodl = 2·√r / (1+r)` with `r = sp1/sp0`
-  and sqrt-prices clamped to `[√Pa, √Pb]`.
-- Greeks: `delta = -L / (2·√P·P)`, `gamma = L / (2·P²·√P)`, zero outside range.
+- IL compares the LP portfolio against holding the entry composition, both valued
+  at the *current* price. For L normalized to 1 and sqrt-prices clamped to
+  `[√Pa, √Pb]`: `x = 1/√P̂ − 1/√Pb`, `y = √P̂ − √Pa`, and
+  `IL = (x1·P1 + y1)/(x0·P1 + y0) − 1`. The clamp freezes the *holdings* outside
+  the range while valuation still uses the unclamped current price, so
+  out-of-range IL keeps growing (the full-range `2√k/(1+k)` formula ignores
+  range width and understates concentrated IL ~10x).
+- Greeks: `delta = -L / (2·√P·P)`, `gamma = d(delta)/dP = 3·L / (4·P²·√P)`,
+  zero outside range.
 
 These are numerically simple enough to be validated by hand-computed invariant
 vectors (see below).
@@ -63,8 +69,8 @@ vectors (see below).
       "price_current": 80.0,
       "price_lower": 80.0,
       "price_upper": 120.0,
-      "expected_il": -0.00155402,
-      "tolerance_abs": 1e-5
+      "expected_il": -0.063588933,
+      "tolerance_abs": 1e-7
     }
   ],
   "greeks_vectors": [
@@ -74,7 +80,7 @@ vectors (see below).
       "tick_lower": -100,
       "tick_upper": 100,
       "expected_delta": -500000.0,
-      "expected_gamma": 500000.0,
+      "expected_gamma": 750000.0,
       "tolerance_rel": 1e-9
     }
   ]
@@ -107,25 +113,31 @@ real bugs.
 |----|-------------|----------|
 | I1 | Entry == current | Exactly 0 |
 | I2 | Entry price unknown (0.0) | Exactly 0 (early return) |
-| I3 | Drop to lower bound | `-0.00155402` (hand-computed from `2√r/(1+r)−1`) |
-| I4 | Rise to upper bound | `-0.00104520` |
-| I5 | Price far below range → clamps to lower, equals I3 | `-0.00155402` |
-| I6 | Price far above range → clamps to upper, equals I4 | `-0.00104520` |
+| I3 | Drop to lower bound | `-0.063588933` (hand-derived below) |
+| I4 | Rise to upper bound | `-0.043353495` |
+| I5 | Price far below range → LP frozen all-A at the bound, HODL keeps its B leg | `-0.820482326` |
+| I6 | Price far above range → LP frozen all-B at the bound, HODL keeps its A leg | `-0.794221075` |
 
-Tolerance `1e-5` absolute is tighter than 1% of the IL magnitude.
+Tolerance `1e-7` absolute. Note I5/I6 are *not* equal to I3/I4: only the
+holdings are clamped at the range boundary; the valuation price keeps moving,
+so out-of-range IL keeps deepening.
 
-I3 derivation, for reference:
+I3 derivation, for reference (L normalized to 1):
 ```
-pa = √80 = 8.94427190999916
-pb = √120 = 10.9544511501033
-sp0 = √100 = 10.0                              (in [pa, pb], no clamp)
-sp1 = √80 = 8.94427190999916                   (clamped to pa)
-r   = sp1 / sp0 = 0.894427190999916
-√r  = 0.945741609003176
-lp_relative = 2·√r / (1 + r)
-            = 1.89148321800635 / 1.89442719099992
-            = 0.99844598...
-IL  = lp_relative - 1 = -0.00155402
+pa  = √80  = 8.944271909999159
+pb  = √120 = 10.954451150103322
+sp0 = √100 = 10.0                          (in [pa, pb], no clamp)
+sp1 = √80  = 8.944271909999159             (clamped to pa)
+
+Entry holdings:   x0 = 1/sp0 − 1/pb = 0.008712223651...
+                  y0 = sp0 − pa     = 1.055728090000841
+Current holdings: x1 = 1/sp1 − 1/pb = 0.020516343914...
+                  y1 = sp1 − pa     = 0
+
+V_HODL(80) = x0·80 + y0 = 1.752705982...   →  1.752761 with full precision
+V_LP(80)   = x1·80 + y1 = 1.641307513...
+
+IL = V_LP/V_HODL − 1 = -0.063588933
 ```
 
 The test runner additionally asserts the invariant `IL ≤ 0` whenever the entry
@@ -138,12 +150,12 @@ gives `price = 1.0` exactly, making expected values integer-clean:
 
 | ID | L     | Range        | Expected δ     | Expected γ    | Invariant |
 |----|-------|--------------|----------------|---------------|-----------|
-| G1 | 1e6   | [-100, 100]  | -500000        | 500000        | In range, P=1 → δ=-L/2, γ=L/2 |
+| G1 | 1e6   | [-100, 100]  | -500000        | 750000        | In range, P=1 → δ=-L/2, γ=3L/4 |
 | G2 | 1e6   | above        | 0              | 0             | Out of range |
 | G3 | 1e6   | below        | 0              | 0             | Out of range |
 | G4 | 0     | [-100, 100]  | 0              | 0             | Zero liquidity |
-| G5 | 2e6   | [-100, 100]  | -1000000       | 1000000       | Linearity in L |
-| G6 | 1e6   | [-1000, 1000]| -500000        | 500000        | Depends only on P and L, not on range width |
+| G5 | 2e6   | [-100, 100]  | -1000000       | 1500000       | Linearity in L |
+| G6 | 1e6   | [-1000, 1000]| -500000        | 750000        | Depends only on P and L, not on range width |
 
 Tolerance `1e-9` relative is near f64 precision.
 
@@ -179,5 +191,19 @@ you are trying to validate.
 
 ## Discrepancies found
 
-None. All 7 amounts / 6 IL / 6 greeks vectors match the current implementation
-within the documented tolerances.
+Two were found and fixed during PR #64 review; the vectors above are the
+re-derived values:
+
+1. **IL formula** — the original implementation applied the *full-range*
+   Uniswap-v2 ratio `2√k/(1+k)` with the range used only for clamping, which
+   understates concentrated IL roughly 10x in range (and far more out of
+   range). The original I3–I6 fixture values were pinned from that
+   implementation's own output (violating the regeneration rule above), and an
+   earlier revision of this document derived I3 with a third, also-incorrect
+   variant (`2√r/(1+r)` with `r = sp1/sp0`, giving `-0.00155402`).
+2. **Gamma** — implemented as `L/(2·P^2.5)`, inconsistent with the module's own
+   `delta = -L/(2·P^1.5)` whose derivative is `3L/(4·P^2.5)` (1.5x larger).
+
+Both formulas and all affected vectors were re-derived from first principles
+(see I3 derivation above). All 7 amounts / 6 IL / 6 greeks vectors match the
+current implementation within the documented tolerances.

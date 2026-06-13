@@ -34,9 +34,20 @@ impl PnlResult {
 
 /// Compute impermanent loss as a fraction (e.g. -0.02 = -2%).
 ///
-/// Uses the standard concentrated liquidity IL formula.
-/// Clamps prices to range boundaries before computing.
-/// Returns 0.0 if entry price is 0 (unknown).
+/// Concentrated-liquidity IL: compare the LP portfolio against holding the
+/// entry composition, both valued at the *current* price. For liquidity
+/// normalized to 1 and a sqrt-price s clamped to [√Pa, √Pb], the position
+/// holds `x = 1/s − 1/√Pb` of token A and `y = s − √Pa` of token B:
+///
+///   IL = (x1·P1 + y1) / (x0·P1 + y0) − 1
+///
+/// The clamp freezes the *holdings* outside the range (all-A below, all-B
+/// above) while both portfolios are still valued at the unclamped current
+/// price, so out-of-range IL keeps growing as the price runs — unlike the
+/// full-range 2√k/(1+k) formula, which ignores range width entirely and
+/// understates concentrated IL by an order of magnitude.
+///
+/// Returns 0.0 if entry price is 0 (unknown) or the range is degenerate.
 pub fn compute_il(price_entry: f64, price_current: f64, price_lower: f64, price_upper: f64) -> f64 {
     if price_entry == 0.0 {
         return 0.0;
@@ -44,14 +55,27 @@ pub fn compute_il(price_entry: f64, price_current: f64, price_lower: f64, price_
 
     let pa = price_lower.sqrt();
     let pb = price_upper.sqrt();
+    // NaN-safe degenerate-range guard: pa must be strictly positive and pb > pa.
+    if pa <= 0.0 || pa.is_nan() || pb.is_nan() || pb <= pa {
+        return 0.0;
+    }
+
     let sp0 = price_entry.sqrt().clamp(pa, pb);
     let sp1 = price_current.sqrt().clamp(pa, pb);
 
-    // Standard CLMM IL: V_LP/V_HODL = 2√k/(1+k) where k = P1/P0.
-    // In sqrt-price terms: = 2·sp1·sp0 / (sp0² + sp1²)
-    let lp_relative = 2.0 * sp1 * sp0 / (sp0 * sp0 + sp1 * sp1);
+    let x0 = 1.0 / sp0 - 1.0 / pb;
+    let y0 = sp0 - pa;
+    let x1 = 1.0 / sp1 - 1.0 / pb;
+    let y1 = sp1 - pa;
 
-    lp_relative - 1.0 // always <= 0
+    let v_hodl = x0 * price_current + y0;
+    let v_lp = x1 * price_current + y1;
+    if v_hodl <= 0.0 {
+        return 0.0;
+    }
+
+    // min(0) guards float noise at sp0 == sp1; mathematically V_LP <= V_HODL.
+    (v_lp / v_hodl - 1.0).min(0.0)
 }
 
 #[cfg(test)]
