@@ -73,12 +73,22 @@ Real P&L = `fees_earned - impermanent_loss`
 
 These instructions govern the automated PR review (`.github/workflows/claude-review.yml`).
 
-- **Focus on bugs, security issues, and performance problems.** For this codebase, weigh:
-  - Money-handling correctness — CLMM math errors, liquidity/amount over/underflow, sign errors in IL/delta, off-by-one in tick math.
-  - Security — keypair or secret leakage, unverified program ownership before account deserialization, unchecked RPC/feed data, missing slippage/approval guards in execution paths.
-  - Performance — blocking calls in async paths, unbounded retries, N+1 RPC calls, missing connection pooling.
-  - Robustness — `unwrap()`/`expect()`/`panic!` in production paths, swallowed errors, missing reconnect on WebSocket feeds.
-- **Skip style and formatting nitpicks** — `cargo fmt` and `cargo clippy` already gate those in CI.
-- **Be concise and actionable.** State the problem, why it matters, and the fix. No filler.
-- **Post inline comments on the specific lines** where an issue occurs whenever possible; reserve the summary for cross-cutting concerns.
-- If nothing is worth raising, say so briefly — do not manufacture findings.
+**What to look for.** For this codebase, weigh — in priority order:
+
+1. **Money-handling correctness** — CLMM math errors, liquidity/amount over/underflow, sign errors in IL/delta, off-by-one in tick math, rounding that leaks value. Cross-check math against the formulas in the "Math Reference" section above and against the Orca Whirlpool JS SDK.
+2. **Security** — keypair or secret leakage, unverified program ownership before account deserialization, unchecked RPC/feed data, missing slippage/approval guards in execution paths.
+3. **Robustness** — `unwrap()`/`expect()`/`panic!` in production paths, swallowed errors, missing reconnect on WebSocket feeds.
+4. **Performance** — blocking calls in async paths, unbounded retries, N+1 RPC calls, missing connection pooling.
+
+**Severity.** Tag every finding with one of:
+- 🔴 **Blocker** — correctness / security / money-loss / panic in a production path. Must be fixed before merge.
+- 🟡 **Should-fix** — a real issue that is not merge-blocking.
+
+Anything that would be a style/formatting nit: do not post it. `cargo fmt` and `cargo clippy -D warnings` already gate those in CI.
+
+**Depth (the review "level").** Default is **BALANCED**: report real issues of medium-or-higher confidence; skip speculative concerns. To change rigor, edit the `Depth:` line in the workflow prompt:
+- *Blockers-only* — post only 🔴 findings; fewest comments.
+- *Balanced* (default) — 🔴 + 🟡, medium+ confidence.
+- *Exhaustive* — broad coverage including lower-confidence/edge findings; more comments, more false positives.
+
+**Style.** Be concise and actionable — state the problem, why it matters, and the fix. Post inline comments on the exact lines; use the single summary comment for a severity tally and cross-cutting notes. If nothing is worth raising, say so briefly — do not manufacture findings.
