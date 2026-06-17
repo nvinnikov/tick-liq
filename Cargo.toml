@@ -63,5 +63,9 @@ sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono
 teloxide = { version = "0.13", features = ["macros"] }
 dptree = "0.3"
 
+# Observability (Prometheus / VictoriaMetrics)
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
 [dev-dependencies]
 proptest = "1"

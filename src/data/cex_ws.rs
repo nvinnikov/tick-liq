@@ -36,6 +36,13 @@ pub struct CexPrice {
 
 pub type CexPriceState = Arc<RwLock<Option<CexPrice>>>;
 
+/// True iff (bid, ask) is a sane quote: both finite, both positive, and not crossed.
+/// `f64::parse` accepts "NaN"/"inf"/negatives, so every numeric quote must pass here
+/// before it can move funds (a NaN mid silently disables threshold risk checks).
+pub fn validate_quote(bid: f64, ask: f64) -> bool {
+    bid.is_finite() && ask.is_finite() && bid > 0.0 && ask > 0.0 && bid <= ask
+}
+
 /// Apply a BookTicker update to shared state. Returns true if state was written,
 /// false if the incoming data was missing or failed to parse (logs a warn! in that case).
 ///
@@ -74,7 +81,7 @@ fn apply_book_ticker(bid: Option<&str>, ask: Option<&str>, state: &CexPriceState
     // `f64::parse` happily accepts "NaN"/"inf"/negatives. A NaN mid-price
     // poisons P&L and silently disables threshold risk checks (NaN comparisons
     // are always false), so reject anything that is not a sane quote.
-    if !(bid_f.is_finite() && ask_f.is_finite() && bid_f > 0.0 && ask_f > 0.0 && bid_f <= ask_f) {
+    if !validate_quote(bid_f, ask_f) {
         warn!(
             "cex_ws: invalid quote bid='{}' ask='{}', skipping",
             bid_str, ask_str
@@ -331,5 +338,30 @@ mod tests {
         let updated = apply_book_ticker(Some("102.0"), Some("100.0"), &state);
         assert!(!updated);
         assert!(state.read().expect("read").is_none());
+    }
+
+    #[test]
+    fn validate_quote_accepts_valid_quotes() {
+        // Normal spread
+        assert!(validate_quote(100.0, 102.0));
+        // Zero spread (bid == ask) is valid — occurs on illiquid markets
+        assert!(validate_quote(50.0, 50.0));
+        // Very small positive values
+        assert!(validate_quote(0.000_001, 0.000_002));
+    }
+
+    #[test]
+    fn validate_quote_rejects_invalid_inputs() {
+        // Non-finite
+        assert!(!validate_quote(f64::NAN, 100.0));
+        assert!(!validate_quote(100.0, f64::NAN));
+        assert!(!validate_quote(f64::INFINITY, 100.0));
+        assert!(!validate_quote(100.0, f64::NEG_INFINITY));
+        // Non-positive
+        assert!(!validate_quote(0.0, 100.0));
+        assert!(!validate_quote(100.0, 0.0));
+        assert!(!validate_quote(-1.0, 100.0));
+        // Crossed book (bid > ask)
+        assert!(!validate_quote(102.0, 100.0));
     }
 }
