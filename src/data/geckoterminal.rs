@@ -9,7 +9,7 @@
 //! → `data.attributes.ohlcv_list = [[ts, open, high, low, close, volume_usd], …]`
 //! returned newest-first. Volume is in USD (`currency=usd`).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 const BASE_URL: &str = "https://api.geckoterminal.com/api/v2";

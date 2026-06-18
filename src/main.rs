@@ -1960,7 +1960,11 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let from_ts = from_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+            let from_ts = from_date
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp();
             let to_ts = to_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
 
             let client = reqwest::Client::builder()

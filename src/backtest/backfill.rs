@@ -85,8 +85,7 @@ pub fn synthesize_ticks(candles: &[OhlcvCandle], p: &PoolSynthParams) -> Vec<Poo
             liquidity: p.pool_liquidity,
             fee_growth_global_a: 0,
             fee_growth_global_b: fee_growth_b,
-            observed_at: chrono::DateTime::from_timestamp(c.timestamp, 0)
-                .unwrap_or_default(),
+            observed_at: chrono::DateTime::from_timestamp(c.timestamp, 0).unwrap_or_default(),
         });
     }
 
@@ -111,7 +110,7 @@ mod tests {
     fn params() -> PoolSynthParams {
         PoolSynthParams {
             pool_address: "POOL".to_string(),
-            fee_rate_bps: 10.0,           // 0.1%
+            fee_rate_bps: 10.0,            // 0.1%
             pool_liquidity: 1_000_000_000, // 1e9
             decimals_a: 9,
             decimals_b: 6,
@@ -165,7 +164,7 @@ mod tests {
     /// (v1+v2) * fee_rate * (pos_L/pool_L) = 3e6 * 0.001 * (1e8/1e9) = $300.
     #[test]
     fn round_trips_through_db_replay() {
-        use crate::backtest::db_replay::{run_db_backtest, DbBacktestInput};
+        use crate::backtest::db_replay::{DbBacktestInput, run_db_backtest};
         use crate::storage::tick_reader::PoolTickRow;
         use crate::strategy::RebalanceConfig;
 
@@ -187,7 +186,7 @@ mod tests {
         let input = DbBacktestInput {
             initial_value_usd: 10_000.0,
             entry_price: 100.0,
-            price_lower: 1.0,    // very wide range → stays in range, IL ≈ 0
+            price_lower: 1.0, // very wide range → stays in range, IL ≈ 0
             price_upper: 10_000.0,
             fee_rate_bps: 10.0,
             tick_spacing: 64,
