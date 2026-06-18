@@ -22,8 +22,10 @@
 //! of pool fees. The round-trip is covered by a golden test below.
 //!
 //! Approximations (accepted for research, same spirit as T-03-09): constant pool
-//! liquidity, all fees attributed to the quote side, and the first candle's
-//! volume is the delta baseline (not counted) — negligible over a multi-month run.
+//! liquidity and all fees attributed to the quote (token-B) side. A zero-growth
+//! baseline row is prepended at the first candle's price so the first real
+//! candle's volume is counted — its fee delta would otherwise be dropped by
+//! `db_replay`, which skips the very first tick.
 
 use crate::data::geckoterminal::OhlcvCandle;
 use crate::math::sqrt_price::price_to_sqrt_q64;
@@ -56,7 +58,25 @@ pub fn synthesize_ticks(candles: &[OhlcvCandle], p: &PoolSynthParams) -> Vec<Poo
     let pool_l = p.pool_liquidity as f64;
 
     let mut fee_growth_b: u128 = 0;
-    let mut rows = Vec::with_capacity(candles.len());
+    let mut rows = Vec::with_capacity(candles.len() + 1);
+
+    // Zero-growth baseline row at the first candle's price. db_replay skips the
+    // first tick when computing fee deltas, so without this the first candle's
+    // volume would be silently dropped. Shares the first candle's calendar day
+    // (same `observed_at`, slot one lower) to avoid spawning a phantom day.
+    if let Some(first) = candles.first() {
+        let raw_price = first.close / ui_factor;
+        rows.push(PoolTick {
+            pool_address: p.pool_address.clone(),
+            slot: first.timestamp - 1,
+            tick_current: super::price_to_tick(raw_price, p.tick_spacing),
+            sqrt_price: price_to_sqrt_q64(raw_price),
+            liquidity: p.pool_liquidity,
+            fee_growth_global_a: 0,
+            fee_growth_global_b: 0,
+            observed_at: chrono::DateTime::from_timestamp(first.timestamp, 0).unwrap_or_default(),
+        });
+    }
 
     for c in candles {
         // Raw-domain price (token-B base units per token-A base unit).
@@ -118,30 +138,39 @@ mod tests {
         }
     }
 
-    // close=100 UI, raw=0.1; vol 0 / 1e6 / 2e6 USD.
+    // close=100 UI, raw=0.1; vol 1e6 / 1e6 / 2e6 USD (first is non-zero on
+    // purpose so the baseline-row fix is observable).
     fn candles() -> Vec<OhlcvCandle> {
         vec![
-            candle(1_000_000, 100.0, 0.0),
+            candle(1_000_000, 100.0, 1_000_000.0),
             candle(1_086_400, 100.0, 1_000_000.0),
             candle(1_172_800, 100.0, 2_000_000.0),
         ]
     }
 
     #[test]
-    fn fee_growth_accumulates_in_q64_64() {
-        // Δfg = vol * 0.001 * 1e6 * 2^64 / 1e9.
-        // candle1: 1e6*0.001*1e6/1e9 = 1.0 → Δ = 2^64.
-        // candle2: 2.0 → Δ = 2^65. Running: [0, 2^64, 3*2^64].
+    fn prepends_zero_growth_baseline_row() {
         let rows = synthesize_ticks(&candles(), &params());
-        assert_eq!(rows.len(), 3);
+        // One extra row vs candles; it carries zero fee growth and sorts first.
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].fee_growth_global_b, 0);
+        assert_eq!(rows[0].slot, 1_000_000 - 1);
+    }
+
+    #[test]
+    fn fee_growth_accumulates_in_q64_64() {
+        // Δfg = vol * 0.001 * 1e6 * 2^64 / 1e9 = (vol/1e6) * 2^64.
+        // Rows: baseline 0, then 1e6→2^64, 1e6→2*2^64, 2e6→4*2^64.
+        let rows = synthesize_ticks(&candles(), &params());
         assert_eq!(rows[0].fee_growth_global_b, 0);
         assert_eq!(rows[1].fee_growth_global_b, 1u128 << 64);
-        assert_eq!(rows[2].fee_growth_global_b, 3u128 << 64);
+        assert_eq!(rows[2].fee_growth_global_b, 2u128 << 64);
+        assert_eq!(rows[3].fee_growth_global_b, 4u128 << 64);
         // Quote-side only; base side stays zero.
         assert!(rows.iter().all(|r| r.fee_growth_global_a == 0));
         // Constant liquidity + constant price.
         assert!(rows.iter().all(|r| r.liquidity == 1_000_000_000));
-        assert_eq!(rows[0].tick_current, rows[2].tick_current);
+        assert_eq!(rows[0].tick_current, rows[3].tick_current);
     }
 
     #[test]
@@ -160,8 +189,10 @@ mod tests {
     }
 
     /// The whole point: synthesised ticks replayed through `db_replay` must
-    /// reproduce the position's real share of pool fees.
-    /// (v1+v2) * fee_rate * (pos_L/pool_L) = 3e6 * 0.001 * (1e8/1e9) = $300.
+    /// reproduce the position's real share of pool fees. With the baseline row
+    /// all three candles count: (1+1+2)e6 * fee_rate * (pos_L/pool_L)
+    /// = 4e6 * 0.001 * (1e8/1e9) = $400. (Without the baseline it would be $300,
+    /// silently dropping the first candle — this asserts the fix.)
     #[test]
     fn round_trips_through_db_replay() {
         use crate::backtest::db_replay::{DbBacktestInput, run_db_backtest};
@@ -204,8 +235,8 @@ mod tests {
 
         let result = run_db_backtest(input, &ticks).unwrap();
         assert!(
-            (result.total_fees_usd - 300.0).abs() < 0.01,
-            "expected ~$300 fees, got {}",
+            (result.total_fees_usd - 400.0).abs() < 0.01,
+            "expected ~$400 fees, got {}",
             result.total_fees_usd
         );
     }

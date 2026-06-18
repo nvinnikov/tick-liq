@@ -411,7 +411,8 @@ enum Commands {
         /// Pool fee rate in basis points (e.g. 4 = 0.04%)
         #[arg(long, default_value_t = 4.0)]
         fee_bps: f64,
-        /// Constant pool liquidity estimate (Q64.64 L). Read from `depth`/on-chain.
+        /// Constant pool liquidity L (plain integer, same unit as the backtest's
+        /// --position-liquidity). Read from `depth` or on-chain pool state.
         #[arg(long)]
         pool_liquidity: u128,
         /// Token A mint decimals (SOL = 9)
@@ -1998,9 +1999,10 @@ async fn main() -> Result<()> {
             let total_vol: f64 = candles.iter().map(|c| c.volume_usd).sum();
 
             println!(
-                "Backfill — {} {} candles for pool {}",
-                ticks.len(),
+                "Backfill — {} {} candles → {} rows (incl. baseline) for pool {}",
+                candles.len(),
                 timeframe,
+                ticks.len(),
                 pool
             );
             println!(
@@ -2020,9 +2022,7 @@ async fn main() -> Result<()> {
                 anyhow::anyhow!("--db-url or DATABASE_URL is required (or use --dry-run)")
             })?;
             let pg = storage::connect(db_url).await?;
-            for t in &ticks {
-                storage::writer::write_pool_tick(&pg, t).await?;
-            }
+            storage::writer::write_pool_ticks(&pg, &ticks).await?;
             println!(
                 "Wrote {} pool_ticks rows. Replay with: \
                  backtest --pool {pool} --from {from} --to {to} \
