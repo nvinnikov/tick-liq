@@ -10,6 +10,10 @@ Built as a from-scratch exploration of concentrated-liquidity market microstruct
 the CLMM math has **zero external dependencies** and is validated against the Orca
 Whirlpool SDK via golden vectors and property-based tests.
 
+📈 **[Research writeup: when is a CLMM LP position profitable?](docs/research.md)** — an
+empirical fee-vs-IL study across six real Orca pools, run through this engine, with the
+model's limitations stated plainly.
+
 Stack: **Rust · Tokio (async) · Solana RPC/WebSocket · CLMM math · PostgreSQL/TimescaleDB**
 
 ```
