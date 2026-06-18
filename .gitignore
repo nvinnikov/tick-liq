@@ -1,0 +1,13 @@
+# Rust
+/target/
+
+# Config (may contain secrets)
+config/config.toml
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store

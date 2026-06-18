@@ -1,0 +1,78 @@
+[package]
+name = "tick-liq"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+rust-version = "1.86"  # MSRV required by binance-sdk v45 (D-04)
+
+[lib]
+name = "tick_liq"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lp-inspect"
+path = "src/main.rs"
+
+[dependencies]
+# Solana
+# Phase 11.1 (D-01 + user-locked OQ-1 resolution):
+# solana-sdk — façade crate on component crates (solana-pubkey, solana-program, solana-account ...)
+# solana-client 4.x remains beta as of 2026-04-17; user accepted beta-risk for single major surface.
+solana-client = "4.0.0-beta.7"
+solana-sdk = "4"
+
+# Orca math
+orca_whirlpools_core = "2"
+
+# Serialization
+borsh = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+
+# HTTP (GeckoTerminal historical OHLCV backfill) — native-tls matches the
+# TLS backend already pulled by tokio-tungstenite/binance-sdk, no new TLS stack.
+reqwest = { version = "0.11", features = ["json"] }
+
+# CEX (Phase 11.1, D-04 + user-locked v45 pin)
+# binance-sdk 45.0.0 released 2026-04-15, MSRV 1.86, tokio ≥ 1.33
+# default-features = false — 26 feature flags upstream, only "spot" is needed
+# TLS backend: default openssl-tls (D-04 + OQ-3)
+binance-sdk = { version = "45", features = ["spot"], default-features = false }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Research experiment config (committed, hand-editable TOML)
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Time (for watch command)
+chrono = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Storage
+sqlx-core = { version = "0.8", default-features = false, features = ["_tls-native-tls", "_rt-tokio"] }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono"] }
+
+# Telegram bot
+teloxide = { version = "0.13", features = ["macros"] }
+dptree = "0.3"
+
+# Observability (Prometheus / VictoriaMetrics)
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+[dev-dependencies]
+proptest = "1"

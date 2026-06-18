@@ -1,0 +1,70 @@
+# Research sweep config — backtest a matrix of (pool × range-width × rebalance)
+# over real GeckoTerminal history. Run: `cargo run -- research`.
+#
+# Pool params (fee_bps, tick_spacing, pool_liquidity) are a snapshot read from
+# each Orca Whirlpool account on-chain on 2026-06-19. pool_liquidity is the live
+# L at snapshot time — fees scale with it, so it is the one approximated input
+# (constant over the window). Only USDC-quoted pools are used so token-B fees map
+# directly to USD. Pools span the volatility spectrum (JLP low → Fartcoin high).
+
+[settings]
+from = "2026-01-01"
+to = "2026-06-01"
+timeframe = "day"
+capital_usd = 10000.0
+range_widths = [0.05, 0.10, 0.20, 0.50]
+rebalance = [false, true]
+
+[[pools]]
+label = "JLP/USDC"
+address = "6NUiVmsNjsi4AfsMsEiaezsaV9N4N1ZrD4jEnuWNRvyb"
+fee_bps = 2.0
+decimals_a = 6
+decimals_b = 6
+tick_spacing = 2
+pool_liquidity = "316155909947"
+
+[[pools]]
+label = "cbBTC/USDC"
+address = "HxA6SKW5qA4o12fjVgTpXdq2YnZ5Zv1s7SB4FFomsyLM"
+fee_bps = 4.0
+decimals_a = 8
+decimals_b = 6
+tick_spacing = 4
+pool_liquidity = "1933236013551"
+
+[[pools]]
+label = "SOL/USDC"
+address = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"
+fee_bps = 4.0
+decimals_a = 9
+decimals_b = 6
+tick_spacing = 4
+pool_liquidity = "499694058107073"
+
+[[pools]]
+label = "JUP/USDC"
+address = "4Ui9QdDNuUaAGqCPcDSp191QrixLzQiLxJ1Gnqvz3szP"
+fee_bps = 4.0
+decimals_a = 6
+decimals_b = 6
+tick_spacing = 4
+pool_liquidity = "138254249363"
+
+[[pools]]
+label = "ZEC/USDC"
+address = "GTHKH8s82ZR8GTSFZ1dUu6wfdxhy59wpMShxzG5zjiPm"
+fee_bps = 16.0
+decimals_a = 8
+decimals_b = 6
+tick_spacing = 16
+pool_liquidity = "2901297304320"
+
+[[pools]]
+label = "Fartcoin/USDC"
+address = "J5jzvT22u1Mt6de4gkBhEsTSTjBfYS7A6aF5jzu9ihkC"
+fee_bps = 5.0
+decimals_a = 6
+decimals_b = 6
+tick_spacing = 8
+pool_liquidity = "600457179515"

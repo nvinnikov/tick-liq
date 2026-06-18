@@ -1,0 +1,80 @@
+# Automated PR review.
+#
+# Tuning knobs (all here + the "Code Review Guidelines" section of CLAUDE.md):
+#   - Depth/strictness ...... the "Depth:" line in the prompt below
+#   - Severity scheme ....... the "Severity:" line in the prompt + CLAUDE.md
+#   - Model ................. claude_args --model (Opus = best, Sonnet = faster/cheaper)
+#   - Turn budget ........... claude_args --max-turns
+#   - What gets skipped ..... on.pull_request.paths-ignore (docs/research-only PRs)
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Docs/research-only PRs don't trigger a review (saves quota, cuts noise).
+    paths-ignore:
+      - '**/*.md'
+      - 'research/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+# A new push to the same PR cancels an in-flight review for it.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are the automated reviewer for this Solana CLMM LP-manager
+            (Rust). Review this pull request following the "Code Review
+            Guidelines" section in CLAUDE.md at the repository root.
+
+            Use `gh pr diff` to read the changes. Do NOT build, compile, or run
+            tests — no cargo, no clippy. Review statically from the diff; you may
+            `Read`/`Grep` surrounding files for context.
+
+            Path-scoped rules: if the diff touches `src/math/` or
+            `src/execution/`, `Read` that directory's `CLAUDE.md` first (the diff
+            won't show it) and apply its rules ON TOP of the root guidelines.
+            These are the money paths — review them strictly.
+
+            Depth: BALANCED. Report real bugs, security issues, and performance
+            problems of medium or higher confidence. Skip style/formatting
+            nitpicks and skip speculative concerns you are not reasonably sure
+            about. Do not manufacture findings.
+
+            Severity: prefix every inline comment with exactly one of:
+              🔴 Blocker — correctness / security / money-loss / panic in a
+                 production path; must be fixed before merge.
+              🟡 Should-fix — a real issue that is not merge-blocking.
+            If something is only a nit, do not post it at all.
+
+            Post findings as inline comments on the exact lines using
+            `mcp__github_inline_comment__create_inline_comment` with
+            `confirmed: true`. Then post ONE `gh pr comment` summary with a tally
+            (e.g. "2 🔴, 1 🟡") plus any cross-cutting notes. If nothing is worth
+            raising, post a single short summary saying the PR looks clean.
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 30
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
