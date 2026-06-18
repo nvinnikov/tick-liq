@@ -1,5 +1,6 @@
 pub mod cex_ws;
 pub mod coinbase_ws;
+pub mod geckoterminal;
 pub mod ws;
 
 /// A price source, used as the `source` label on price/feed metrics.

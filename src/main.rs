@@ -398,6 +398,44 @@ enum Commands {
         #[arg(long, default_value_t = 1.05f64)]
         range_upper_factor: f64,
     },
+    /// Backfill real historical pool_ticks from GeckoTerminal OHLCV (no API key).
+    ///
+    /// Pulls price + volume history for a Solana pool and synthesises pool_ticks
+    /// rows so `backtest --pool` can replay real data. Use --dry-run to fetch and
+    /// preview without a database.
+    Backfill {
+        /// Pool address (e.g. Orca SOL/USDC Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE)
+        #[arg(long)]
+        pool: String,
+        /// Start date (YYYY-MM-DD, inclusive, UTC)
+        #[arg(long)]
+        from: String,
+        /// End date (YYYY-MM-DD, exclusive, UTC)
+        #[arg(long)]
+        to: String,
+        /// OHLCV timeframe: day | hour | minute
+        #[arg(long, default_value = "day")]
+        timeframe: String,
+        /// Pool fee rate in basis points (e.g. 4 = 0.04%)
+        #[arg(long, default_value_t = 4.0)]
+        fee_bps: f64,
+        /// Constant pool liquidity L (plain integer, same unit as the backtest's
+        /// --position-liquidity). Read from `depth` or on-chain pool state.
+        #[arg(long)]
+        pool_liquidity: u128,
+        /// Token A mint decimals (SOL = 9)
+        #[arg(long, default_value_t = 9u8)]
+        decimals_a: u8,
+        /// Token B mint decimals (USDC = 6)
+        #[arg(long, default_value_t = 6u8)]
+        decimals_b: u8,
+        /// Tick spacing of the pool
+        #[arg(long, default_value_t = 64i32)]
+        tick_spacing: i32,
+        /// Fetch + synthesise + preview only; do not write to the database
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2038,6 +2076,105 @@ async fn main() -> Result<()> {
                 let result = backtest::run(&params, *seed);
                 backtest::print_results(&result);
             }
+        }
+        Commands::Backfill {
+            pool,
+            from,
+            to,
+            timeframe,
+            fee_bps,
+            pool_liquidity,
+            decimals_a,
+            decimals_b,
+            tick_spacing,
+            dry_run,
+        } => {
+            use chrono::NaiveDate;
+
+            let from_date: NaiveDate = from
+                .parse()
+                .map_err(|_| anyhow::anyhow!("--from must be a valid date (YYYY-MM-DD)"))?;
+            let to_date: NaiveDate = to
+                .parse()
+                .map_err(|_| anyhow::anyhow!("--to must be a valid date (YYYY-MM-DD)"))?;
+            if to_date <= from_date {
+                anyhow::bail!("--to must be after --from");
+            }
+            if *pool_liquidity == 0 {
+                anyhow::bail!(
+                    "--pool-liquidity must be > 0 (fees accrue per unit of pool liquidity)"
+                );
+            }
+
+            let from_ts = from_date
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp();
+            let to_ts = to_date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+
+            let client = reqwest::Client::builder()
+                .user_agent("tick-liq-backfill")
+                .build()?;
+            let candles =
+                data::geckoterminal::fetch_range(&client, pool, timeframe, from_ts, to_ts).await?;
+            if candles.is_empty() {
+                anyhow::bail!(
+                    "GeckoTerminal returned no candles for {pool} in [{from_date}, {to_date}). \
+                     Check the pool address and timeframe ({timeframe})."
+                );
+            }
+
+            let params = backtest::backfill::PoolSynthParams {
+                pool_address: pool.clone(),
+                fee_rate_bps: *fee_bps,
+                pool_liquidity: *pool_liquidity,
+                decimals_a: *decimals_a,
+                decimals_b: *decimals_b,
+                tick_spacing: *tick_spacing,
+            };
+            let ticks = backtest::backfill::synthesize_ticks(&candles, &params);
+
+            let first = ticks.first().expect("non-empty: candles checked above");
+            let last = ticks.last().expect("non-empty: candles checked above");
+            let first_price =
+                math::sqrt_price::sqrt_q64_to_ui_price(first.sqrt_price, *decimals_a, *decimals_b);
+            let last_price =
+                math::sqrt_price::sqrt_q64_to_ui_price(last.sqrt_price, *decimals_a, *decimals_b);
+            let total_vol: f64 = candles.iter().map(|c| c.volume_usd).sum();
+
+            println!(
+                "Backfill — {} {} candles → {} rows (incl. baseline) for pool {}",
+                candles.len(),
+                timeframe,
+                ticks.len(),
+                pool
+            );
+            println!(
+                "Window:  {} → {}",
+                first.observed_at.date_naive(),
+                last.observed_at.date_naive()
+            );
+            println!("Price:   ${first_price:.4} → ${last_price:.4}");
+            println!("Volume:  ${total_vol:.0} total");
+
+            if *dry_run {
+                println!("(dry-run — nothing written to the database)");
+                return Ok(());
+            }
+
+            let db_url = cli.db_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--db-url or DATABASE_URL is required (or use --dry-run)")
+            })?;
+            let pg = storage::connect(db_url).await?;
+            storage::writer::write_pool_ticks(&pg, &ticks).await?;
+            println!(
+                "Wrote {} pool_ticks rows. Replay with: \
+                 backtest --pool {pool} --from {from} --to {to} \
+                 --position-liquidity <L> --fee-bps {fee_bps} \
+                 --decimals-a {decimals_a} --decimals-b {decimals_b}",
+                ticks.len()
+            );
         }
         Commands::Hedge { mint, dry_run } => {
             if !*dry_run {

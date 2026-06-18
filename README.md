@@ -1,8 +1,16 @@
 # tick-liq
 
-Automated LP manager for Solana CLMM pools (Orca Whirlpools / Raydium).
-Computes real-time P&L, impermanent loss, Greeks (delta/gamma),
-and generates rebalance + delta-hedge signals.
+**A liquidity-provider manager for Solana CLMM pools, written in Rust.** Reads on-chain
+Orca Whirlpool / Raydium positions, computes real-time P&L (fees − impermanent loss),
+option-style Greeks (delta/gamma), price impact, and tick-level liquidity depth — then
+generates rebalance and delta-hedge signals. Includes an offline CLMM backtester built
+on the same math that powers the live inspector.
+
+Built as a from-scratch exploration of concentrated-liquidity market microstructure:
+the CLMM math has **zero external dependencies** and is validated against the Orca
+Whirlpool SDK via golden vectors and property-based tests.
+
+Stack: **Rust · Tokio (async) · Solana RPC/WebSocket · CLMM math · PostgreSQL/TimescaleDB**
 
 ```
 Pool:        Hp7...   fee 5 bps
@@ -13,7 +21,12 @@ Greeks:      delta=-0.0123  gamma=0.000041
 Decision:    HOLD (position healthy, net P&L positive)
 ```
 
-Stack: **Rust · Tokio · Solana RPC/WebSocket · PostgreSQL/TimescaleDB · Anchor CPI**
+> ⚠️ **Disclaimer — educational / research use only.** This is a personal research and
+> portfolio project, **not financial advice** and not a turnkey trading system. Execution
+> paths (`rebalance`, `hedge`) are **dry-run only** — no transactions or CPI are sent.
+> The backtester uses simulated price paths. Nothing here is audited. Use at your own risk;
+> DeFi positions can lose value. Never commit private keys — supply them via environment
+> variables only (see [Configuration](#configuration)).
 
 ---
 
@@ -179,6 +192,43 @@ Imperm. loss:  $-25.54  (-0.3% of capital)
 Net P&L:       $524.46  (5.2% of capital)
 Fee APY:       66.9%
 Days in range: 11/30 (37%)
+────────────────────────────────────────────────────────────
+Risk metrics (annualised, rf=0)
+Volatility:    42.0%
+Sharpe:        1.83
+Sortino:       2.91
+Max drawdown:  -4.1%
+Calmar:        15.2
+```
+
+Risk metrics are computed from the per-day equity curve by `src/math/metrics.rs` (pure, zero-dep, golden-tested) and print for both the GBM and the DB-replay (`--pool`) backtests. Undefined metrics (e.g. a perfectly flat return series) render as `n/a`.
+
+### `backfill` — seed real history from GeckoTerminal (no API key)
+
+```
+lp-inspect backfill --pool <ADDR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> \
+  [--timeframe day|hour|minute] [--fee-bps 4] --pool-liquidity <L> \
+  [--decimals-a 9] [--decimals-b 6] [--tick-spacing 64] [--dry-run]
+```
+
+Pulls real price + USD-volume history for a Solana pool from the free, key-less
+[GeckoTerminal API](https://www.geckoterminal.com/dex-api) and synthesises `pool_ticks`
+rows so `backtest --pool` can replay **real data** instead of a synthetic GBM path.
+
+Price → `sqrt_price`/`tick_current`; per-candle USD volume → a running
+`fee_growth_global_b` accumulator (`Δfg = volume·fee_rate·10^decimals_b·2^64 / pool_liquidity`),
+so a replayed position earns exactly its share `volume·fee_rate·(position_L / pool_L)`
+of pool fees — verified by a golden round-trip test against `db_replay`.
+
+`--dry-run` fetches, synthesises, and previews the window (no database needed). Without it,
+rows are written to Postgres via `--db-url`/`DATABASE_URL` (idempotent on `(pool, slot)`).
+Liquidity is approximated as a constant (`--pool-liquidity`, read from `depth` or on-chain);
+fees are attributed to the quote side — accepted approximations for research.
+
+```bash
+# Preview a window with no DB:
+lp-inspect backfill --pool Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE \
+  --from 2026-06-01 --to 2026-06-15 --fee-bps 4 --pool-liquidity 1000000000000000 --dry-run
 ```
 
 ### `db migrate`

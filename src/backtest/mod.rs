@@ -4,6 +4,7 @@
 //! state, then applies CLMM math at each step (IL, fee accrual).
 //! Optionally fires rebalance events via the strategy signal module.
 
+pub mod backfill;
 pub mod db_replay;
 
 use crate::math::il::compute_il;
@@ -621,4 +622,25 @@ pub fn print_results(result: &BacktestResult) {
     if result.total_rebalances > 0 {
         println!("Rebalances:    {}", result.total_rebalances);
     }
+
+    print_risk_metrics(result);
+}
+
+/// Print research-grade risk metrics (Sharpe/Sortino/maxDD/Calmar/vol) derived
+/// from the per-day equity curve. Undefined metrics (e.g. flat returns) show `n/a`.
+fn print_risk_metrics(result: &BacktestResult) {
+    use crate::math::metrics::RiskMetrics;
+
+    let daily_net: Vec<f64> = result.days.iter().map(|d| d.net_pnl_usd).collect();
+    let m = RiskMetrics::from_backtest(result.params_snapshot.initial_value_usd, &daily_net);
+
+    let fmt = |o: Option<f64>| o.map_or_else(|| "n/a".to_string(), |v| format!("{v:.2}"));
+
+    println!("{}", "─".repeat(60));
+    println!("Risk metrics (annualised, rf=0)");
+    println!("Volatility:    {:.1}%", m.annual_volatility * 100.0);
+    println!("Sharpe:        {}", fmt(m.sharpe));
+    println!("Sortino:       {}", fmt(m.sortino));
+    println!("Max drawdown:  {:.1}%", m.max_drawdown * 100.0);
+    println!("Calmar:        {}", fmt(m.calmar));
 }

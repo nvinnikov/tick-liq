@@ -24,43 +24,62 @@ pub struct PoolTick {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Shared INSERT for `pool_ticks`. u128 columns are bound as decimal strings and
+/// cast via the explicit `::numeric` (matching NUMERIC(80,0)); `ON CONFLICT DO
+/// NOTHING` makes writes idempotent per `(pool_address, slot)`.
+const INSERT_POOL_TICK_SQL: &str = "INSERT INTO pool_ticks \
+     (time, pool_address, slot, tick_current, sqrt_price, liquidity, \
+      fee_growth_global_a, fee_growth_global_b) \
+     VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric) \
+     ON CONFLICT (pool_address, slot) DO NOTHING";
+
 /// Insert one `PoolTick` snapshot into `pool_ticks`.
 ///
 /// If a row with the same `(pool_address, slot)` already exists the insert is
-/// silently skipped — the database UNIQUE constraint handles idempotency so
-/// reconnects / duplicate deliveries are safe.
-///
-/// Uses the non-macro `query` path so the crate compiles without a live
-/// `DATABASE_URL` at build time.
+/// silently skipped (UNIQUE constraint), so reconnects / duplicate deliveries
+/// are safe. Uses the non-macro `query` path so the crate compiles without a
+/// live `DATABASE_URL` at build time.
 pub async fn write_pool_tick(pool: &PgPool, tick: &PoolTick) -> Result<()> {
-    // u128 values are serialised as decimal strings; Postgres casts them via
-    // the explicit `::numeric` in the SQL, matching NUMERIC(80,0) columns.
-    let sp = tick.sqrt_price.to_string();
-    let liq = tick.liquidity.to_string();
-    let fga = tick.fee_growth_global_a.to_string();
-    let fgb = tick.fee_growth_global_b.to_string();
-
     pool.execute(
-        query(
-            "INSERT INTO pool_ticks \
-             (time, pool_address, slot, tick_current, sqrt_price, liquidity, \
-              fee_growth_global_a, fee_growth_global_b) \
-             VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric) \
-             ON CONFLICT (pool_address, slot) DO NOTHING",
-        )
-        .bind(tick.observed_at)
-        .bind(&tick.pool_address)
-        .bind(tick.slot)
-        .bind(tick.tick_current)
-        .bind(sp)
-        .bind(liq)
-        .bind(fga)
-        .bind(fgb),
+        query(INSERT_POOL_TICK_SQL)
+            .bind(tick.observed_at)
+            .bind(&tick.pool_address)
+            .bind(tick.slot)
+            .bind(tick.tick_current)
+            .bind(tick.sqrt_price.to_string())
+            .bind(tick.liquidity.to_string())
+            .bind(tick.fee_growth_global_a.to_string())
+            .bind(tick.fee_growth_global_b.to_string()),
     )
     .await
     .context("write_pool_tick failed")?;
 
     Ok(())
+}
+
+/// Insert many `PoolTick` rows inside a single transaction — far fewer round
+/// trips than per-row autocommit for large (hour/minute) backfills. Idempotent
+/// per `(pool_address, slot)`. Returns the number of rows submitted.
+pub async fn write_pool_ticks(pool: &PgPool, ticks: &[PoolTick]) -> Result<u64> {
+    let mut tx = pool.begin().await.context("begin pool_ticks transaction")?;
+    for tick in ticks {
+        (&mut *tx)
+            .execute(
+                query(INSERT_POOL_TICK_SQL)
+                    .bind(tick.observed_at)
+                    .bind(&tick.pool_address)
+                    .bind(tick.slot)
+                    .bind(tick.tick_current)
+                    .bind(tick.sqrt_price.to_string())
+                    .bind(tick.liquidity.to_string())
+                    .bind(tick.fee_growth_global_a.to_string())
+                    .bind(tick.fee_growth_global_b.to_string()),
+            )
+            .await
+            .context("batch write_pool_tick failed")?;
+    }
+    tx.commit().await.context("commit pool_ticks transaction")?;
+    Ok(ticks.len() as u64)
 }
 
 /// A P&L snapshot captured after each tick event, recording fee income,
