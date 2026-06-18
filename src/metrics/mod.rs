@@ -85,16 +85,24 @@ pub fn init_from_env() -> anyhow::Result<bool> {
                 }),
                 Err(_) => 15,
             };
+            // VictoriaMetrics / Pushgateway URLs can embed `user:pass@` basic-auth
+            // credentials. Never log or surface the raw URL — derive a
+            // credential-free "scheme://host[:port]" view for diagnostics.
+            let safe_endpoint = sanitize_push_url(&url);
             PrometheusBuilder::new()
                 .with_push_gateway(url.clone(), Duration::from_secs(interval_secs), None, None)
                 .map_err(|e| {
-                    anyhow::anyhow!("METRICS_PUSH_URL '{}' is not a valid URI: {}", url, e)
+                    anyhow::anyhow!(
+                        "METRICS_PUSH_URL ({}) is not a valid URI: {}",
+                        safe_endpoint,
+                        e
+                    )
                 })?
                 .install()
                 .map_err(|e| anyhow::anyhow!("failed to install Prometheus push gateway: {}", e))?;
             describe_metrics();
             tracing::info!(
-                push_url = %url,
+                push_endpoint = %safe_endpoint,
                 interval_secs,
                 "metrics: push gateway installed"
             );
@@ -105,6 +113,29 @@ pub fn init_from_env() -> anyhow::Result<bool> {
             tracing::info!("metrics disabled (set METRICS_LISTEN or METRICS_PUSH_URL to enable)");
             Ok(false)
         }
+    }
+}
+
+/// Strip any `user:pass@` userinfo from a push-gateway URL, returning a
+/// credential-free `scheme://host[:port]` string safe to log. Path and query
+/// are dropped too (they can carry tokens). Best-effort, no url crate: on any
+/// unexpected shape it falls back to a fixed, credential-free label.
+fn sanitize_push_url(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s, r),
+        None => return "push gateway".to_string(),
+    };
+    // Authority ends at the first '/', '?' or '#'.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop userinfo (everything up to and including the last '@').
+    let host = match authority.rsplit_once('@') {
+        Some((_creds, h)) => h,
+        None => authority,
+    };
+    if host.is_empty() {
+        format!("{}://(host hidden)", scheme)
+    } else {
+        format!("{}://{}", scheme, host)
     }
 }
 
@@ -266,6 +297,29 @@ mod tests {
     #[test]
     fn deviation_bps_nan_reference() {
         assert!(deviation_bps(100.0, f64::NAN).is_none());
+    }
+
+    // ── sanitize_push_url ────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_push_url_strips_credentials() {
+        let out = sanitize_push_url("https://user:s3cret@vm.example.com:8428/api/v1/import");
+        assert_eq!(out, "https://vm.example.com:8428");
+        assert!(!out.contains("s3cret"));
+        assert!(!out.contains("user"));
+    }
+
+    #[test]
+    fn sanitize_push_url_no_credentials() {
+        assert_eq!(
+            sanitize_push_url("http://localhost:9091/metrics?job=x"),
+            "http://localhost:9091"
+        );
+    }
+
+    #[test]
+    fn sanitize_push_url_malformed() {
+        assert_eq!(sanitize_push_url("not-a-url"), "push gateway");
     }
 
     // ── Emission smoke test (local recorder — no global install) ─────────────

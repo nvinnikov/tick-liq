@@ -1383,10 +1383,16 @@ async fn main() -> Result<()> {
                     // CEX_STALE_SECS=30 above governs only the P&L price-fallback).
                     const FEED_STALE_SECS: f64 = 60.0;
 
-                    // Orca: the pool price this loop already computes. Binance and
+                    // Orca: the TRUE on-chain pool price (decimal-adjusted from
+                    // sqrt_price), NOT the CEX-blended `price_current`. Binance and
                     // Coinbase emit their own price inside the feeds, so we only
                     // add Orca here (no double-emit).
-                    metrics::record_price(Source::Orca, price_current);
+                    // why: the Orca gauge/deviation exist to surface on-chain-vs-CEX
+                    // divergence — `price_current` is the Binance mid when the CEX
+                    // feed is fresh, which would collapse the divergence signal to ~0.
+                    // The position-value gauge below intentionally keeps
+                    // `price_current` as its valuation price.
+                    metrics::record_price(Source::Orca, onchain_price);
 
                     // Snapshot each feed under its lock, then drop the guard
                     // immediately — never hold a RwLock guard across the work below.
@@ -1428,7 +1434,10 @@ async fn main() -> Result<()> {
 
                     // Deviation vs Binance reference (only when Binance mid present).
                     if let Some((binance_mid, _)) = binance_snap {
-                        if let Some(bps) = metrics::deviation_bps(price_current, binance_mid) {
+                        // why: divergence is on-chain vs CEX — use `onchain_price`,
+                        // not the CEX-blended `price_current` (which equals the
+                        // Binance mid when fresh and would report ~0 deviation).
+                        if let Some(bps) = metrics::deviation_bps(onchain_price, binance_mid) {
                             metrics::record_deviation(Source::Orca, bps);
                         }
                         if let Some((coinbase_mid, _)) = coinbase_snap {

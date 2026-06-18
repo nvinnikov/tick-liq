@@ -11,7 +11,6 @@ const COINBASE_WS_URL: &str = "wss://ws-feed.exchange.coinbase.com";
 
 /// Exponential backoff bounds — mirror cex_ws constants.
 const CONNECT_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(5);
-#[allow(dead_code)]
 const CONNECT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// If `stream.next()` does not yield a frame within this window the feed is
