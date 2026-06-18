@@ -1,0 +1,3 @@
+# Analysis dependencies for research/analyze.py
+pandas>=2.0
+matplotlib>=3.7
