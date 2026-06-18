@@ -1,8 +1,16 @@
 # tick-liq
 
-Automated LP manager for Solana CLMM pools (Orca Whirlpools / Raydium).
-Computes real-time P&L, impermanent loss, Greeks (delta/gamma),
-and generates rebalance + delta-hedge signals.
+**A liquidity-provider manager for Solana CLMM pools, written in Rust.** Reads on-chain
+Orca Whirlpool / Raydium positions, computes real-time P&L (fees − impermanent loss),
+option-style Greeks (delta/gamma), price impact, and tick-level liquidity depth — then
+generates rebalance and delta-hedge signals. Includes an offline CLMM backtester built
+on the same math that powers the live inspector.
+
+Built as a from-scratch exploration of concentrated-liquidity market microstructure:
+the CLMM math has **zero external dependencies** and is validated against the Orca
+Whirlpool SDK via golden vectors and property-based tests.
+
+Stack: **Rust · Tokio (async) · Solana RPC/WebSocket · CLMM math · PostgreSQL/TimescaleDB**
 
 ```
 Pool:        Hp7...   fee 5 bps
@@ -13,7 +21,12 @@ Greeks:      delta=-0.0123  gamma=0.000041
 Decision:    HOLD (position healthy, net P&L positive)
 ```
 
-Stack: **Rust · Tokio · Solana RPC/WebSocket · PostgreSQL/TimescaleDB · Anchor CPI**
+> ⚠️ **Disclaimer — educational / research use only.** This is a personal research and
+> portfolio project, **not financial advice** and not a turnkey trading system. Execution
+> paths (`rebalance`, `hedge`) are **dry-run only** — no transactions or CPI are sent.
+> The backtester uses simulated price paths. Nothing here is audited. Use at your own risk;
+> DeFi positions can lose value. Never commit private keys — supply them via environment
+> variables only (see [Configuration](#configuration)).
 
 ---
 
