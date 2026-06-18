@@ -27,6 +27,13 @@ use crate::storage::tick_reader::PoolTickRow;
 use crate::storage::writer::PoolTick;
 use crate::strategy::RebalanceConfig;
 
+/// Disables near-edge rebalancing: `tick - bound <= NEAR_EDGE_OFF` can never be
+/// true (a tick range spans at most ~887k), so only the explicit out-of-range
+/// path can fire. NOTE `near_edge_ticks = 0` does NOT disable it — it rebalances
+/// AT the boundary — so the `rebalance = false` arm must use this to be a true
+/// hold, and the `rebalance = true` arm isolates the out-of-range trigger.
+const NEAR_EDGE_OFF: i32 = -1_000_000;
+
 // ── Config (TOML) ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,6 +91,7 @@ pub struct RunResult {
     /// a thin-pool / narrow-range honesty flag for downstream analysis.
     pub pool_share: f64,
     pub days: usize,
+    pub total_rebalances: u32,
     pub total_fees_usd: f64,
     pub il_usd: f64,
     pub net_pnl_usd: f64,
@@ -98,7 +106,7 @@ pub struct RunResult {
 
 /// CSV header matching `RunResult::to_csv_row`.
 pub fn csv_header() -> String {
-    "label,address,range_width,rebalance,capital_usd,pool_share,days,total_fees_usd,il_usd,\
+    "label,address,range_width,rebalance,capital_usd,pool_share,days,total_rebalances,total_fees_usd,il_usd,\
      net_pnl_usd,net_pct,fee_apy_pct,days_in_range_pct,realized_vol,sharpe,sortino,max_drawdown"
         .to_string()
 }
@@ -107,7 +115,7 @@ impl RunResult {
     pub fn to_csv_row(&self) -> String {
         let opt = |o: Option<f64>| o.map_or_else(|| "".to_string(), |v| format!("{v:.6}"));
         format!(
-            "{},{},{:.4},{},{:.2},{:.6},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.2},{:.6},{},{},{:.6}",
+            "{},{},{:.4},{},{:.2},{:.6},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.2},{:.6},{},{},{:.6}",
             self.label,
             self.address,
             self.range_width,
@@ -115,6 +123,7 @@ impl RunResult {
             self.capital_usd,
             self.pool_share,
             self.days,
+            self.total_rebalances,
             self.total_fees_usd,
             self.il_usd,
             self.net_pnl_usd,
@@ -220,9 +229,16 @@ pub async fn run(cfg: &Config, client: &reqwest::Client) -> Result<Vec<RunResult
         let scale_a = 10f64.powi(pool.decimals_a as i32);
         let scale_b = 10f64.powi(pool.decimals_b as i32);
 
-        // Realized (annualised) volatility of the underlying price.
+        // Realized (annualised) volatility of the underlying price. metrics'
+        // annualisation assumes daily (×√365); rescale for the chosen timeframe.
+        let periods_per_year: f64 = match cfg.settings.timeframe.as_str() {
+            "hour" => 365.0 * 24.0,
+            "minute" => 365.0 * 24.0 * 60.0,
+            _ => 365.0,
+        };
         let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-        let realized_vol = annualized_volatility(&daily_returns(&closes));
+        let realized_vol =
+            annualized_volatility(&daily_returns(&closes)) * (periods_per_year / 365.0).sqrt();
 
         for &width in &cfg.settings.range_widths {
             let lower = entry * (1.0 - width);
@@ -254,7 +270,7 @@ pub async fn run(cfg: &Config, client: &reqwest::Client) -> Result<Vec<RunResult
                     decimals_b: pool.decimals_b,
                     rebalance_cfg: RebalanceConfig {
                         rebalance_out_of_range: rebalance,
-                        near_edge_ticks: 0,
+                        near_edge_ticks: NEAR_EDGE_OFF,
                         min_net_pnl_usd: 0.0,
                     },
                     range_factor_lower: 1.0 - width,
@@ -275,6 +291,7 @@ pub async fn run(cfg: &Config, client: &reqwest::Client) -> Result<Vec<RunResult
                     capital_usd: cfg.settings.capital_usd,
                     pool_share: pos_l as f64 / pool_l as f64,
                     days: res.days.len(),
+                    total_rebalances: res.total_rebalances,
                     total_fees_usd: res.total_fees_usd,
                     il_usd: res.total_il_usd,
                     net_pnl_usd: res.net_pnl_usd,
@@ -343,6 +360,7 @@ mod tests {
             capital_usd: 10_000.0,
             pool_share: 0.12,
             days: 30,
+            total_rebalances: 4,
             total_fees_usd: 120.0,
             il_usd: -40.0,
             net_pnl_usd: 80.0,
