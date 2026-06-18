@@ -84,19 +84,35 @@ pub async fn fetch_ohlcv(
         url.push_str(&format!("&before_timestamp={ts}"));
     }
 
-    let resp = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .context("GeckoTerminal request failed")?;
+    // The free API is rate-limited (~30 req/min); retry HTTP 429 with
+    // exponential backoff (2s, 4s, 8s) so large multi-page backfills don't abort.
+    const MAX_RETRIES: u32 = 3;
+    let mut attempt = 0;
+    let body: Value = loop {
+        let resp = client
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .context("GeckoTerminal request failed")?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        bail!("GeckoTerminal returned HTTP {status} for pool {pool_address}");
-    }
-
-    let body: Value = resp.json().await.context("decode GeckoTerminal JSON")?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
+            attempt += 1;
+            let backoff = std::time::Duration::from_secs(2u64.pow(attempt));
+            tracing::warn!(
+                pool = pool_address,
+                attempt,
+                "GeckoTerminal rate-limited (429); backing off {backoff:?}"
+            );
+            tokio::time::sleep(backoff).await;
+            continue;
+        }
+        if !status.is_success() {
+            bail!("GeckoTerminal returned HTTP {status} for pool {pool_address}");
+        }
+        break resp.json().await.context("decode GeckoTerminal JSON")?;
+    };
     parse_ohlcv_list(&body)
 }
 
