@@ -48,6 +48,9 @@ binance-sdk = { version = "45", features = ["spot"], default-features = false }
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
+# Research experiment config (committed, hand-editable TOML)
+toml = "0.8"
+
 # Error handling
 anyhow = "1"
 thiserror = "1"

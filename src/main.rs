@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -13,6 +13,7 @@ mod execution;
 mod math;
 mod metrics;
 mod protocols;
+mod research;
 mod rpc;
 mod storage;
 mod strategy;
@@ -435,6 +436,18 @@ enum Commands {
         /// Fetch + synthesise + preview only; do not write to the database
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Run a research sweep (pool × range-width × rebalance) over real
+    /// GeckoTerminal history, in memory, and write one CSV row per run.
+    ///
+    /// No database required. Feed the CSV to `research/analyze.py` for charts.
+    Research {
+        /// Path to the experiment config (TOML). See research/experiments.toml.
+        #[arg(long, default_value = "research/experiments.toml")]
+        config: String,
+        /// Output CSV path.
+        #[arg(long, default_value = "research/data/results.csv")]
+        out: String,
     },
 }
 
@@ -2174,6 +2187,37 @@ async fn main() -> Result<()> {
                  --position-liquidity <L> --fee-bps {fee_bps} \
                  --decimals-a {decimals_a} --decimals-b {decimals_b}",
                 ticks.len()
+            );
+        }
+        Commands::Research { config, out } => {
+            let toml_str = std::fs::read_to_string(config)
+                .with_context(|| format!("read research config {config}"))?;
+            let cfg: research::Config = toml::from_str(&toml_str)
+                .with_context(|| format!("parse research config {config}"))?;
+
+            let client = reqwest::Client::builder()
+                .user_agent("tick-liq-research")
+                .build()?;
+            let results = research::run(&cfg, &client).await?;
+            if results.is_empty() {
+                anyhow::bail!("no runs produced — all pools failed to fetch or were too short");
+            }
+
+            if let Some(dir) = std::path::Path::new(out).parent() {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("create {}", dir.display()))?;
+            }
+            let mut csv = String::from(&research::csv_header());
+            csv.push('\n');
+            for r in &results {
+                csv.push_str(&r.to_csv_row());
+                csv.push('\n');
+            }
+            std::fs::write(out, csv).with_context(|| format!("write {out}"))?;
+            println!(
+                "Research — {} runs across {} pools → {out}",
+                results.len(),
+                cfg.pools.len()
             );
         }
         Commands::Hedge { mint, dry_run } => {
