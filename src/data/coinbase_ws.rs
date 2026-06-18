@@ -130,11 +130,34 @@ pub async fn watch_coinbase_price(
                 }
                 backoff = (backoff * 2).min(CONNECT_RETRY_MAX);
             }
-            SessionEnd::StreamClosed(reason) | SessionEnd::Stale(reason) => {
-                // A healthy session ended — reset backoff and reconnect immediately.
-                warn!("coinbase_ws: session ended ({}), reconnecting", reason);
-                backoff = CONNECT_RETRY_BASE;
-                // No sleep — stale/closed is not a connect failure.
+            SessionEnd::Ended { reason, healthy } => {
+                if healthy {
+                    // The session delivered at least one valid ticker before it
+                    // ended — treat it as a genuine mid-life drop: reset backoff
+                    // and reconnect immediately.
+                    warn!("coinbase_ws: live session ended ({}), reconnecting", reason);
+                    backoff = CONNECT_RETRY_BASE;
+                } else {
+                    // Connected but never produced a price before failing (e.g.
+                    // server accepts the upgrade then immediately closes / errors,
+                    // or rejects the subscribe by dropping the stream). Without a
+                    // backoff + sleep this would hammer Coinbase in a tight loop
+                    // and risk getting the feed rate-limited dark. Grow the
+                    // backoff exactly like a connect failure.
+                    warn!(
+                        "coinbase_ws: session failed before first price ({}); retrying in {}s",
+                        reason,
+                        backoff.as_secs()
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = shutdown.recv() => {
+                            info!("coinbase_ws: shutdown received during backoff, exiting");
+                            return;
+                        }
+                    }
+                    backoff = (backoff * 2).min(CONNECT_RETRY_MAX);
+                }
             }
         }
     }
@@ -147,10 +170,17 @@ enum SessionEnd {
     Shutdown,
     /// `connect_async` or the subscribe frame failed — keep/grow backoff.
     ConnectError(String),
-    /// Stream closed normally or with an error — reset backoff.
-    StreamClosed(String),
-    /// `stream.next()` timed out — feed went silent without closing.
-    Stale(String),
+    /// A connected session ended (clean close, stream error, or staleness).
+    ///
+    /// `healthy` distinguishes a genuine mid-life drop (at least one valid
+    /// ticker was received — reset backoff, reconnect immediately) from a
+    /// session that connected but failed before producing any price (keep and
+    /// grow the backoff, so a server that accepts the upgrade then immediately
+    /// errors is not hammered in a tight loop).
+    Ended {
+        reason: String,
+        healthy: bool,
+    },
 }
 
 /// Drive one WebSocket session: connect, subscribe, read until done.
@@ -183,6 +213,11 @@ async fn run_session(
         product_id
     );
 
+    // Whether this session has produced at least one valid price. Drives the
+    // backoff decision on exit: a drop after real data is a healthy mid-life
+    // reconnect; a drop before any data keeps the backoff growing.
+    let mut got_price = false;
+
     loop {
         tokio::select! {
             _ = shutdown.recv() => {
@@ -193,17 +228,23 @@ async fn run_session(
                 match result {
                     Err(_elapsed) => {
                         // timeout — feed went silent
-                        return SessionEnd::Stale(format!(
-                            "no frame for >{}s",
-                            FEED_STALE_TIMEOUT.as_secs()
-                        ));
+                        return SessionEnd::Ended {
+                            reason: format!("no frame for >{}s", FEED_STALE_TIMEOUT.as_secs()),
+                            healthy: got_price,
+                        };
                     }
                     Ok(None) => {
-                        return SessionEnd::StreamClosed("stream closed".to_string());
+                        return SessionEnd::Ended {
+                            reason: "stream closed".to_string(),
+                            healthy: got_price,
+                        };
                     }
                     Ok(Some(Err(e))) => {
                         warn!("coinbase_ws: stream error: {}", e);
-                        return SessionEnd::StreamClosed(format!("stream error: {e}"));
+                        return SessionEnd::Ended {
+                            reason: format!("stream error: {e}"),
+                            healthy: got_price,
+                        };
                     }
                     Ok(Some(Ok(Message::Text(text)))) => {
                         if let Some(mid) = parse_ticker_mid(&text, product_id) {
@@ -216,15 +257,22 @@ async fn run_session(
                                 });
                             }
                             crate::metrics::record_price(crate::data::Source::Coinbase, mid);
+                            got_price = true;
                         }
                     }
                     Ok(Some(Ok(Message::Close(_)))) => {
-                        return SessionEnd::StreamClosed("server closed connection".to_string());
+                        return SessionEnd::Ended {
+                            reason: "server closed connection".to_string(),
+                            healthy: got_price,
+                        };
                     }
                     Ok(Some(Ok(Message::Ping(data)))) => {
                         // Reply to server-initiated pings so the connection stays alive.
                         if let Err(e) = write.send(Message::Pong(data)).await {
-                            return SessionEnd::StreamClosed(format!("pong send: {e}"));
+                            return SessionEnd::Ended {
+                                reason: format!("pong send: {e}"),
+                                healthy: got_price,
+                            };
                         }
                     }
                     Ok(Some(Ok(_))) => {
@@ -341,6 +389,18 @@ mod tests {
         let raw =
             r#"{"type":"ticker","product_id":"SOL-USD","best_bid":"102.0","best_ask":"100.0"}"#;
         assert!(parse_ticker_mid(raw, "SOL-USD").is_none());
+    }
+
+    #[test]
+    fn null_bid_or_ask_returns_none() {
+        // Coinbase can send null bid/ask during a trading halt; Option<String>
+        // deserializes JSON null to None and as_deref()? must propagate it.
+        let null_bid =
+            r#"{"type":"ticker","product_id":"SOL-USD","best_bid":null,"best_ask":"101.0"}"#;
+        assert!(parse_ticker_mid(null_bid, "SOL-USD").is_none());
+        let null_ask =
+            r#"{"type":"ticker","product_id":"SOL-USD","best_bid":"99.0","best_ask":null}"#;
+        assert!(parse_ticker_mid(null_ask, "SOL-USD").is_none());
     }
 
     #[test]
