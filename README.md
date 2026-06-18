@@ -199,6 +199,34 @@ Calmar:        15.2
 
 Risk metrics are computed from the per-day equity curve by `src/math/metrics.rs` (pure, zero-dep, golden-tested) and print for both the GBM and the DB-replay (`--pool`) backtests. Undefined metrics (e.g. a perfectly flat return series) render as `n/a`.
 
+### `backfill` — seed real history from GeckoTerminal (no API key)
+
+```
+lp-inspect backfill --pool <ADDR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> \
+  [--timeframe day|hour|minute] [--fee-bps 4] --pool-liquidity <L> \
+  [--decimals-a 9] [--decimals-b 6] [--tick-spacing 64] [--dry-run]
+```
+
+Pulls real price + USD-volume history for a Solana pool from the free, key-less
+[GeckoTerminal API](https://www.geckoterminal.com/dex-api) and synthesises `pool_ticks`
+rows so `backtest --pool` can replay **real data** instead of a synthetic GBM path.
+
+Price → `sqrt_price`/`tick_current`; per-candle USD volume → a running
+`fee_growth_global_b` accumulator (`Δfg = volume·fee_rate·10^decimals_b·2^64 / pool_liquidity`),
+so a replayed position earns exactly its share `volume·fee_rate·(position_L / pool_L)`
+of pool fees — verified by a golden round-trip test against `db_replay`.
+
+`--dry-run` fetches, synthesises, and previews the window (no database needed). Without it,
+rows are written to Postgres via `--db-url`/`DATABASE_URL` (idempotent on `(pool, slot)`).
+Liquidity is approximated as a constant (`--pool-liquidity`, read from `depth` or on-chain);
+fees are attributed to the quote side — accepted approximations for research.
+
+```bash
+# Preview a window with no DB:
+lp-inspect backfill --pool Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE \
+  --from 2026-06-01 --to 2026-06-15 --fee-bps 4 --pool-liquidity 1000000000000000 --dry-run
+```
+
 ### `db migrate`
 
 ```
