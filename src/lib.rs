@@ -10,6 +10,7 @@ pub mod data;
 pub mod display;
 pub mod execution;
 pub mod math;
+pub mod metrics;
 pub mod protocols;
 pub mod rpc;
 pub mod storage;
