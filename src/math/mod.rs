@@ -9,4 +9,5 @@ pub mod fees;
 pub mod greeks;
 pub mod il;
 pub mod impact;
+pub mod metrics;
 pub mod sqrt_price;

@@ -188,7 +188,16 @@ Imperm. loss:  $-25.54  (-0.3% of capital)
 Net P&L:       $524.46  (5.2% of capital)
 Fee APY:       66.9%
 Days in range: 11/30 (37%)
+────────────────────────────────────────────────────────────
+Risk metrics (annualised, rf=0)
+Volatility:    42.0%
+Sharpe:        1.83
+Sortino:       2.91
+Max drawdown:  -4.1%
+Calmar:        15.2
 ```
+
+Risk metrics are computed from the per-day equity curve by `src/math/metrics.rs` (pure, zero-dep, golden-tested) and print for both the GBM and the DB-replay (`--pool`) backtests. Undefined metrics (e.g. a perfectly flat return series) render as `n/a`.
 
 ### `db migrate`
 
