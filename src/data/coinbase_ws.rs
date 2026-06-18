@@ -7,13 +7,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::data::cex_ws::{CexPrice, CexPriceState, validate_quote};
 
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 const COINBASE_WS_URL: &str = "wss://ws-feed.exchange.coinbase.com";
 
 /// Exponential backoff bounds — mirror cex_ws constants.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 const CONNECT_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(5);
 #[allow(dead_code)]
 const CONNECT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
@@ -21,13 +17,9 @@ const CONNECT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30
 /// If `stream.next()` does not yield a frame within this window the feed is
 /// considered stale and we reconnect. Coinbase can go silent without closing
 /// the socket, so wrapping each `next()` in a timeout is the only defence.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 const FEED_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Serde target for a Coinbase ticker message.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct CoinbaseTicker {
     #[serde(rename = "type")]
@@ -44,8 +36,6 @@ struct CoinbaseTicker {
 /// Returns `None` for subscription confirmations, heartbeats, error frames,
 /// wrong products, missing or non-numeric fields, or quotes that fail
 /// [`validate_quote`].
-// Not yet called from production paths — tests exercise it directly.
-#[allow(dead_code)]
 fn parse_ticker_mid(raw: &str, expected_product: &str) -> Option<f64> {
     let msg: CoinbaseTicker = match serde_json::from_str(raw) {
         Ok(v) => v,
@@ -94,8 +84,6 @@ fn parse_ticker_mid(raw: &str, expected_product: &str) -> Option<f64> {
 ///   backoff sleeps via `tokio::select!`.
 ///
 /// Returns cleanly when `shutdown` fires.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub async fn watch_coinbase_price(
     product_id: String,
     state: CexPriceState,
@@ -164,8 +152,6 @@ pub async fn watch_coinbase_price(
 }
 
 /// How a single session ended.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 enum SessionEnd {
     Shutdown,
     /// `connect_async` or the subscribe frame failed — keep/grow backoff.
@@ -184,8 +170,6 @@ enum SessionEnd {
 }
 
 /// Drive one WebSocket session: connect, subscribe, read until done.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 async fn run_session(
     product_id: &str,
     state: &CexPriceState,

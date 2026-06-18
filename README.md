@@ -58,6 +58,10 @@ cargo build --release
 | `TELEGRAM_BOT_TOKEN`        | —                               | Bot API token. Required by `watch --telegram` (env-only, never a file). |
 | `TELEGRAM_CHAT_ID`          | —                               | Authorized chat ID. Commands from any other chat are ignored. Required by `watch --telegram`. |
 | `TELEGRAM_ALLOWED_USER_IDS` | —                               | Comma-separated Telegram user IDs allowed to send commands (`/approve`, `/pause`, …). Chat membership alone is not enough. Required by `watch --telegram`. |
+| `METRICS_LISTEN`            | —                               | `host:port` (e.g. `0.0.0.0:9100`) to serve Prometheus metrics over HTTP (pull/scrape). Wins over `METRICS_PUSH_URL` if both are set. |
+| `METRICS_PUSH_URL`          | —                               | Push-gateway URL (VictoriaMetrics `/api/v1/import/prometheus`). Enables push mode when `METRICS_LISTEN` is unset. |
+| `METRICS_PUSH_INTERVAL_SECS`| `15`                            | Push interval in seconds for `METRICS_PUSH_URL`. Falls back to 15 on a malformed value. |
+| `COINBASE_SYMBOL`           | —                               | Coinbase product id (e.g. `SOL-USD`) for the observational secondary price feed in `watch` (also `--coinbase-symbol`). Metrics-only; does not affect P&L or rebalancing. |
 
 ```bash
 export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<KEY>

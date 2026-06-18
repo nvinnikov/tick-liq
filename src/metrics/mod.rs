@@ -16,8 +16,6 @@ use crate::data::Source;
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Snapshot of a watched position's state, emitted as gauges labelled by mint.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub struct PositionMetrics {
     pub mint: String,
     pub value_usd: f64,
@@ -46,8 +44,6 @@ pub struct PositionMetrics {
 ///
 /// Returns an error if the address/URL fails to parse or if the recorder
 /// installation fails (e.g. a global recorder is already set).
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub fn init_from_env() -> anyhow::Result<bool> {
     let listen = std::env::var("METRICS_LISTEN").ok();
     let push_url = std::env::var("METRICS_PUSH_URL").ok();
@@ -77,10 +73,18 @@ pub fn init_from_env() -> anyhow::Result<bool> {
         }
 
         (None, Some(url)) => {
-            let interval_secs: u64 = std::env::var("METRICS_PUSH_INTERVAL_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(15);
+            // A malformed interval must not silently fall back — an operator
+            // who typo'd "30s" deserves to know their setting was ignored.
+            let interval_secs: u64 = match std::env::var("METRICS_PUSH_INTERVAL_SECS") {
+                Ok(raw) => raw.parse().unwrap_or_else(|_| {
+                    tracing::warn!(
+                        raw = %raw,
+                        "METRICS_PUSH_INTERVAL_SECS is not a valid u64; falling back to 15"
+                    );
+                    15
+                }),
+                Err(_) => 15,
+            };
             PrometheusBuilder::new()
                 .with_push_gateway(url.clone(), Duration::from_secs(interval_secs), None, None)
                 .map_err(|e| {
@@ -106,8 +110,6 @@ pub fn init_from_env() -> anyhow::Result<bool> {
 
 // ── Describe ─────────────────────────────────────────────────────────────────
 
-// Not yet called from production paths — init_from_env (above) calls it on install.
-#[allow(dead_code)]
 fn describe_metrics() {
     metrics::describe_gauge!("tickliq_price_mid", "Mid-price for a given source (USD)");
     metrics::describe_gauge!(
@@ -156,23 +158,17 @@ fn describe_metrics() {
 // ── Emit helpers ─────────────────────────────────────────────────────────────
 
 /// Record the mid-price from a given source.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub fn record_price(source: Source, mid: f64) {
     metrics::gauge!("tickliq_price_mid", "source" => source.label()).set(mid);
 }
 
 /// Record the price deviation from the Binance reference price in basis points.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub fn record_deviation(source: Source, bps: f64) {
     metrics::gauge!("tickliq_price_deviation_bps", "source" => source.label(), "ref" => "binance")
         .set(bps);
 }
 
 /// Record feed liveness and staleness for a given source.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub fn record_feed(source: Source, up: bool, staleness_secs: f64) {
     metrics::gauge!("tickliq_feed_up", "source" => source.label()).set(if up { 1.0 } else { 0.0 });
     metrics::gauge!("tickliq_feed_staleness_seconds", "source" => source.label())
@@ -180,8 +176,6 @@ pub fn record_feed(source: Source, up: bool, staleness_secs: f64) {
 }
 
 /// Record all gauges for a watched LP position.
-// Not yet wired into call-sites — upcoming watch-loop tasks will use it.
-#[allow(dead_code)]
 pub fn record_position(snap: &PositionMetrics) {
     let mint: String = snap.mint.clone();
     metrics::gauge!("tickliq_position_value_usd", "mint" => mint.clone()).set(snap.value_usd);
@@ -207,8 +201,6 @@ pub fn record_position(snap: &PositionMetrics) {
 /// Compute the deviation of `price` from `reference` in basis points.
 ///
 /// Returns `None` if either input is non-finite or if `reference <= 0.0`.
-// Not yet wired into call-sites — upcoming CEX feed tasks will use it.
-#[allow(dead_code)]
 pub fn deviation_bps(price: f64, reference: f64) -> Option<f64> {
     if !price.is_finite() || !reference.is_finite() || reference <= 0.0 {
         return None;
@@ -316,6 +308,12 @@ mod tests {
         assert!(
             rendered.contains("source=\"orca\""),
             "missing source=orca label in:\n{rendered}"
+        );
+        // Assert the concrete value made it through `.set()` — a no-op or
+        // broken setter would still emit the metric name/label but drop this.
+        assert!(
+            rendered.contains("84.5"),
+            "missing recorded price value 84.5 in:\n{rendered}"
         );
 
         // Deviation

@@ -280,6 +280,13 @@ enum Commands {
         /// (existing Phase 2 behavior).
         #[arg(long)]
         cex_symbol: Option<String>,
+        /// Coinbase product id for the secondary price feed (e.g. SOL-USD).
+        /// Optional and purely observational: when set, a Coinbase ticker feed
+        /// is spawned and its mid-price is emitted to metrics (price + deviation
+        /// vs Binance). It does NOT affect IL / P&L / rebalance decisions —
+        /// those still use the Binance/on-chain price per the existing logic.
+        #[arg(long, env = "COINBASE_SYMBOL")]
+        coinbase_symbol: Option<String>,
     },
     /// Liquidity distribution around current price
     Depth {
@@ -594,7 +601,17 @@ async fn main() -> Result<()> {
             approve_timeout_secs,
             entry_price,
             cex_symbol,
+            coinbase_symbol,
         } => {
+            // Metrics: install the global recorder if env-configured. Never
+            // abort or alter watch behaviour — on any failure we log and go on.
+            match metrics::init_from_env() {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("metrics init failed: {e}; continuing without metrics")
+                }
+            }
+
             match &cex_symbol {
                 Some(sym) => {
                     if sym.trim().is_empty() {
@@ -603,6 +620,11 @@ async fn main() -> Result<()> {
                     tracing::info!("cex_ws: Binance feed will start for {}", sym);
                 }
                 None => tracing::info!("--cex-symbol not set, using on-chain price"),
+            }
+            if let Some(sym) = &coinbase_symbol {
+                if sym.trim().is_empty() {
+                    anyhow::bail!("--coinbase-symbol must not be empty");
+                }
             }
 
             // Validate risk limit flags
@@ -922,6 +944,28 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Optional Coinbase feed — observational only (metrics). Same shape
+            // as the Binance feed: shares the shutdown channel and is awaited on
+            // teardown so it runs its disconnect path. When --coinbase-symbol is
+            // unset, no state is populated and no task is spawned.
+            let coinbase_price_state: data::cex_ws::CexPriceState =
+                std::sync::Arc::new(std::sync::RwLock::new(None));
+            let coinbase_handle = if let Some(sym) = coinbase_symbol.as_ref() {
+                let sym_owned = sym.clone();
+                let state_clone = std::sync::Arc::clone(&coinbase_price_state);
+                let cb_shutdown = shutdown_tx.subscribe();
+                Some(tokio::spawn(async move {
+                    data::coinbase_ws::watch_coinbase_price(sym_owned, state_clone, cb_shutdown)
+                        .await;
+                    tracing::info!("coinbase_ws: feed task exited cleanly");
+                }))
+            } else {
+                None
+            };
+            // Reader handle for the tick loop (None-state when feed not spawned).
+            let coinbase_state_closure = std::sync::Arc::clone(&coinbase_price_state);
+            let coinbase_enabled = coinbase_symbol.is_some();
 
             // Graceful shutdown on Ctrl+C.
             tokio::spawn(async move {
@@ -1330,6 +1374,92 @@ async fn main() -> Result<()> {
                 let is_rebalance =
                     matches!(&decision, strategy::RebalanceDecision::Rebalance { .. });
 
+                // ── Metrics emit (observational; cheap no-op without a recorder) ──
+                // All emit helpers are infallible and called unconditionally — we
+                // never branch on whether a recorder was installed.
+                {
+                    use data::Source;
+                    // Feed-health staleness uses the feeds' own 60s notion (the
+                    // CEX_STALE_SECS=30 above governs only the P&L price-fallback).
+                    const FEED_STALE_SECS: f64 = 60.0;
+
+                    // Orca: the pool price this loop already computes. Binance and
+                    // Coinbase emit their own price inside the feeds, so we only
+                    // add Orca here (no double-emit).
+                    metrics::record_price(Source::Orca, price_current);
+
+                    // Snapshot each feed under its lock, then drop the guard
+                    // immediately — never hold a RwLock guard across the work below.
+                    let binance_snap: Option<(f64, f64)> = {
+                        let guard = cex_price_state_closure
+                            .read()
+                            .unwrap_or_else(|p| p.into_inner());
+                        guard
+                            .as_ref()
+                            .map(|cp| (cp.price, cp.updated_at.elapsed().as_secs_f64()))
+                    };
+                    let coinbase_snap: Option<(f64, f64)> = if coinbase_enabled {
+                        let guard = coinbase_state_closure
+                            .read()
+                            .unwrap_or_else(|p| p.into_inner());
+                        guard
+                            .as_ref()
+                            .map(|cp| (cp.price, cp.updated_at.elapsed().as_secs_f64()))
+                    } else {
+                        None
+                    };
+
+                    // Feed health. A never-populated state reports up=false with
+                    // staleness=f64::MAX: there is no last-update Instant to measure
+                    // against, and MAX is unambiguously "infinitely stale" on a
+                    // dashboard while keeping the gauge monotonic vs a real value.
+                    let (b_up, b_stale) = match binance_snap {
+                        Some((_, s)) => (s < FEED_STALE_SECS, s),
+                        None => (false, f64::MAX),
+                    };
+                    metrics::record_feed(Source::Binance, b_up, b_stale);
+                    if coinbase_enabled {
+                        let (c_up, c_stale) = match coinbase_snap {
+                            Some((_, s)) => (s < FEED_STALE_SECS, s),
+                            None => (false, f64::MAX),
+                        };
+                        metrics::record_feed(Source::Coinbase, c_up, c_stale);
+                    }
+
+                    // Deviation vs Binance reference (only when Binance mid present).
+                    if let Some((binance_mid, _)) = binance_snap {
+                        if let Some(bps) = metrics::deviation_bps(price_current, binance_mid) {
+                            metrics::record_deviation(Source::Orca, bps);
+                        }
+                        if let Some((coinbase_mid, _)) = coinbase_snap {
+                            if let Some(bps) = metrics::deviation_bps(coinbase_mid, binance_mid) {
+                                metrics::record_deviation(Source::Coinbase, bps);
+                            }
+                        }
+                    }
+
+                    // Position gauges. Greeks are recomputed here (cheap, pure
+                    // math) since the watch loop does not otherwise carry them.
+                    let greeks = analytics::greeks::compute_greeks(
+                        pos.liquidity,
+                        pool.sqrt_price,
+                        pos.tick_lower_index,
+                        pos.tick_upper_index,
+                    );
+                    metrics::record_position(&metrics::PositionMetrics {
+                        mint: mint_str.clone(),
+                        value_usd: computed_position_value,
+                        // net P&L = fees − IL, mirroring the PnlSnapshot above.
+                        pnl_usd: computed_fees_earned - computed_il_usd.abs(),
+                        fees_usd: computed_fees_earned,
+                        il_usd: computed_il_usd,
+                        delta: greeks.delta,
+                        gamma: greeks.gamma,
+                        in_range,
+                        rebalance_signal: is_rebalance,
+                    });
+                }
+
                 // Gate: if a rebalance plan were to be submitted, check shadow guard first.
                 // In Phase 2 there is no real plan — we use the pool state as the proxy.
                 // Real rebalance plan construction arrives in Phase 5.
@@ -1518,6 +1648,11 @@ async fn main() -> Result<()> {
             if let Some(h) = cex_handle {
                 if let Err(e) = h.await {
                     tracing::warn!("cex_ws: join error on shutdown: {}", e);
+                }
+            }
+            if let Some(h) = coinbase_handle {
+                if let Err(e) = h.await {
+                    tracing::warn!("coinbase_ws: join error on shutdown: {}", e);
                 }
             }
             if let Some(h) = bot_handle {
