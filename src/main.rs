@@ -11,6 +11,7 @@ mod data;
 mod display;
 mod execution;
 mod math;
+mod metrics;
 mod protocols;
 mod rpc;
 mod storage;

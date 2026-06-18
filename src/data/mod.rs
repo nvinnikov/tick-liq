@@ -4,7 +4,7 @@ pub mod ws;
 /// A price source, used as the `source` label on price/feed metrics.
 // Not yet wired into call-sites — upcoming metrics/Coinbase tasks will use it.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
     Binance,
     Coinbase,
