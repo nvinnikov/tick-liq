@@ -20,6 +20,26 @@ pub fn sqrt_q64_to_price(sqrt_price_q64: u128) -> f64 {
     sqrt_p * sqrt_p
 }
 
+/// Inverse of [`sqrt_q64_to_price`]: convert a *raw* price to a Q64.64 sqrt_price
+/// (`sqrt(price) * 2^64`). Used by the historical backfiller to synthesise
+/// `pool_ticks.sqrt_price` from OHLCV close prices.
+///
+/// Non-positive prices map to `0`; values that would overflow `u128` saturate
+/// to `u128::MAX`. Round-trips with `sqrt_q64_to_price` to f64 precision.
+pub fn price_to_sqrt_q64(raw_price: f64) -> u128 {
+    const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0; // 2^64
+    if raw_price.is_nan() || raw_price <= 0.0 {
+        return 0;
+    }
+    let v = raw_price.sqrt() * TWO_POW_64;
+    // u128::MAX as f64 is the smallest f64 ≥ u128::MAX; compare against it to
+    // avoid UB-adjacent saturating-cast surprises and document the clamp.
+    if !v.is_finite() || v >= u128::MAX as f64 {
+        return u128::MAX;
+    }
+    v as u128
+}
+
 /// Convert a Q64.64 sqrt_price to a human-unit ("UI") price: token B per
 /// token A with both sides decimal-adjusted.
 ///
@@ -52,6 +72,25 @@ mod tests {
         // Hand-computed mid-range value: sqrt_price = 2 * 2^64 -> price = 4.0
         let four = sqrt_q64_to_price(2u128 << 64);
         assert!((four - 4.0).abs() / 4.0 < 1e-9, "got {four}");
+    }
+
+    #[test]
+    fn price_to_sqrt_q64_round_trips() {
+        for &p in &[1.0_f64, 0.084, 4.0, 1234.5, 1e-6] {
+            let back = sqrt_q64_to_price(price_to_sqrt_q64(p));
+            assert!((back - p).abs() / p < 1e-9, "price {p} -> {back}");
+        }
+    }
+
+    #[test]
+    fn price_to_sqrt_q64_one_is_two_pow_64() {
+        assert_eq!(price_to_sqrt_q64(1.0), 1u128 << 64);
+    }
+
+    #[test]
+    fn price_to_sqrt_q64_non_positive_is_zero() {
+        assert_eq!(price_to_sqrt_q64(0.0), 0);
+        assert_eq!(price_to_sqrt_q64(-1.0), 0);
     }
 
     #[test]

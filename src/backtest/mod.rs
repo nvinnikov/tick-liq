@@ -4,6 +4,7 @@
 //! state, then applies CLMM math at each step (IL, fee accrual).
 //! Optionally fires rebalance events via the strategy signal module.
 
+pub mod backfill;
 pub mod db_replay;
 
 use crate::math::il::compute_il;
