@@ -32,6 +32,16 @@ fn account_data_from_notification(json: &serde_json::Value) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
+/// Owner program (base58) declared by an `accountNotification`. Used to verify
+/// program ownership before trusting the in-notification account bytes, matching
+/// the `fetch_account_checked` mandate on the HTTP path (CLAUDE.md: "Always
+/// verify program owner before deserializing").
+fn owner_from_notification(json: &serde_json::Value) -> Option<String> {
+    json.pointer("/params/result/value/owner")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// Resolve a position's entry price: an explicit `--entry-price` flag wins (and
 /// is cached for later runs), else the cached value, else 0.0 ("unknown", which
 /// `compute_il` treats as zero IL). Shared by `position` / `strategy check`.
@@ -1033,6 +1043,8 @@ async fn main() -> Result<()> {
 
             let pool_addr_clone = pool_addr.clone();
             let position_pda_str = position_pda.to_string();
+            // base58 of the Whirlpool program, for verifying notification owners.
+            let whirlpool_program_str = whirlpool_program.to_string();
             let rpc_url = cli.rpc_url.clone();
             let rpc_timeout = cli.rpc_timeout;
             let mint_str = mint.clone();
@@ -1085,7 +1097,32 @@ async fn main() -> Result<()> {
                 // Pool state: prefer the account bytes already in THIS
                 // notification (so the state matches the slot we record below),
                 // falling back to an HTTP fetch only when the payload is absent.
-                let pool = match account_data_from_notification(&json) {
+                // Only trust the account bytes carried in the notification if the
+                // notification's declared owner is the Whirlpool program. A
+                // compromised/buggy WS endpoint could otherwise inject arbitrary
+                // pool state on the path we act on; the discriminator skip in
+                // parse_pool only rejects *other known* Whirlpool account types,
+                // not foreign-program data. On mismatch (or missing owner) we fall
+                // back to the owner-checked HTTP fetch below.
+                let trusted_notification_data =
+                    match account_data_from_notification(&json) {
+                        Some(bytes)
+                            if owner_from_notification(&json).as_deref()
+                                == Some(whirlpool_program_str.as_str()) =>
+                        {
+                            Some(bytes)
+                        }
+                        Some(_) => {
+                            tracing::warn!(
+                                "WS notification owner missing or != Whirlpool program; \
+                                 falling back to owner-checked HTTP fetch"
+                            );
+                            None
+                        }
+                        None => None,
+                    };
+
+                let pool = match trusted_notification_data {
                     Some(bytes) => match protocols::orca::parse_pool(&bytes) {
                         Ok(p) => p,
                         Err(e) => {
@@ -1612,8 +1649,19 @@ async fn main() -> Result<()> {
                         "rebalance_needed tick={} range=[{},{}]",
                         pool.tick_current_index, pos.tick_lower_index, pos.tick_upper_index
                     );
-                    if let Err(e) = guard.submit(&plan_proxy) {
-                        tracing::warn!(error = %e, "rebalance submission gated");
+                    // Distinguish the *expected* shadow-mode block from a real
+                    // submission failure. Matching `Blocked` explicitly means
+                    // that when `Live` submit is wired and gains new error
+                    // variants, this match stops compiling until the genuine
+                    // failure is handled (aborting the close→collect→open
+                    // sequence) rather than silently falling through.
+                    match guard.submit(&plan_proxy) {
+                        Ok(()) => {}
+                        Err(execution::ShadowGuardError::Blocked) => {
+                            tracing::info!(
+                                "rebalance submission blocked by ShadowGuard (shadow mode)"
+                            );
+                        }
                     }
                 }
 

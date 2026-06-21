@@ -27,6 +27,16 @@ pub fn estimate_impact(
     target_pct: f64,
     is_buy: bool,
 ) -> PriceImpact {
+    // Degenerate price would make `1/√P` non-finite; return a safe identity
+    // estimate rather than propagating NaN/Inf into trade sizing.
+    if current_price <= 0.0 {
+        return PriceImpact {
+            target_pct,
+            target_price: 0.0,
+            usd_needed: 0.0,
+        };
+    }
+
     let l = liquidity as f64;
     let target_price = if is_buy {
         current_price * (1.0 + target_pct / 100.0)
@@ -68,6 +78,13 @@ mod tests {
     fn test_target_price_correct_direction_for_buy() {
         let impact = estimate_impact(100.0, 1_000_000, 2.0, true);
         assert!(impact.target_price > 100.0);
+    }
+
+    #[test]
+    fn test_non_positive_price_returns_safe_default() {
+        let i = estimate_impact(0.0, 1_000_000, 2.0, true);
+        assert_eq!(i.usd_needed, 0.0);
+        assert!(i.usd_needed.is_finite() && i.target_price.is_finite());
     }
 
     #[test]

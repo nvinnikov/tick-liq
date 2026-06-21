@@ -12,6 +12,35 @@ pub fn raydium_clmm_program_pubkey() -> Pubkey {
 
 const DISC: usize = 8;
 
+// Anchor account discriminators = first 8 bytes of sha256("account:<Name>").
+// Raydium CLMM owns both `PoolState` and `PersonalPositionState` under the same
+// program, so the program-owner check cannot tell them apart — we reject the
+// wrong account *type* the same way the Orca parser does (orca.rs).
+const POOL_STATE_DISC: [u8; 8] = [247, 237, 227, 245, 215, 195, 222, 70];
+const PERSONAL_POSITION_DISC: [u8; 8] = [70, 111, 150, 126, 230, 15, 25, 117];
+
+/// Reject `data` if its 8-byte Anchor discriminator matches a *known other*
+/// Raydium account type. Mirrors `orca::reject_wrong_account_type`: an unknown
+/// discriminator is allowed through (a stale constant can only fail to catch a
+/// misuse, never reject a genuine account), but a swapped pool/position address
+/// is caught before it deserializes into plausible-looking garbage.
+fn reject_wrong_account_type(data: &[u8], forbidden: &[(&str, [u8; 8])], what: &str) -> Result<()> {
+    if data.len() < DISC {
+        return Ok(()); // length is checked by the caller
+    }
+    let disc = &data[..DISC];
+    for (name, bytes) in forbidden {
+        if disc == bytes {
+            return Err(anyhow!(
+                "expected a Raydium {} account but got a {} account (wrong address?)",
+                what,
+                name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Key fields from a Raydium CLMM PoolState account.
 ///
 /// IMPORTANT: Verify field order against the actual program source before
@@ -58,6 +87,11 @@ pub fn parse_pool(data: &[u8]) -> Result<RaydiumPool> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
+    reject_wrong_account_type(
+        data,
+        &[("PersonalPositionState", PERSONAL_POSITION_DISC)],
+        "PoolState",
+    )?;
     // The struct deliberately omits the account tail, so use `deserialize`
     // (tolerates trailing bytes) — `try_from_slice` rejects any input with
     // bytes left over, i.e. every real on-chain account.
@@ -70,6 +104,11 @@ pub fn parse_position(data: &[u8]) -> Result<RaydiumPosition> {
     if data.len() < DISC {
         return Err(anyhow!("Account data too short: {} bytes", data.len()));
     }
+    reject_wrong_account_type(
+        data,
+        &[("PoolState", POOL_STATE_DISC)],
+        "PersonalPositionState",
+    )?;
     let mut cursor = &data[DISC..];
     RaydiumPosition::deserialize(&mut cursor)
         .map_err(|e| anyhow!("Failed to deserialize Raydium position: {}", e))
@@ -91,6 +130,24 @@ mod tests {
     fn test_parse_position_too_short_returns_error() {
         let result = parse_position(&[0u8; 4]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_pool_rejects_position_account() {
+        // A PersonalPositionState account passed where a PoolState is expected
+        // must be rejected by discriminator, not silently parsed into garbage.
+        let mut data = PERSONAL_POSITION_DISC.to_vec();
+        data.resize(1544, 0xAA);
+        let err = parse_pool(&data).unwrap_err().to_string();
+        assert!(err.contains("PersonalPositionState"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_position_rejects_pool_account() {
+        let mut data = POOL_STATE_DISC.to_vec();
+        data.resize(1544, 0xAA);
+        let err = parse_position(&data).unwrap_err().to_string();
+        assert!(err.contains("PoolState"), "got: {err}");
     }
 
     /// Serialize a `RaydiumPool` with known values, prepend an 8-byte

@@ -46,13 +46,18 @@ pub fn should_rebalance(
         };
     }
 
-    if tick_current - tick_lower <= config.near_edge_ticks {
+    // Near-edge checks only apply when the price is *inside* the range. Without
+    // the in-range guard, an out-of-range price (e.g. tick_current < tick_lower)
+    // makes `tick_current - tick_lower` negative, so `<= near_edge_ticks` is
+    // trivially true and would force a rebalance even when the operator disabled
+    // out-of-range rebalancing (`rebalance_out_of_range = false`).
+    if tick_current >= tick_lower && tick_current - tick_lower <= config.near_edge_ticks {
         return RebalanceDecision::Rebalance {
             reason: "near lower edge".to_string(),
         };
     }
 
-    if tick_upper - tick_current <= config.near_edge_ticks {
+    if tick_current <= tick_upper && tick_upper - tick_current <= config.near_edge_ticks {
         return RebalanceDecision::Rebalance {
             reason: "near upper edge".to_string(),
         };
@@ -118,6 +123,22 @@ mod tests {
         } else {
             panic!("expected Hold");
         }
+    }
+
+    #[test]
+    fn test_out_of_range_with_flag_disabled_holds() {
+        // Operator disabled out-of-range rebalancing; an out-of-range price must
+        // NOT be forced into a rebalance via the near-edge checks (regression).
+        let c = RebalanceConfig {
+            rebalance_out_of_range: false,
+            ..cfg()
+        };
+        // Below range.
+        let d = should_rebalance(-100, 0, 1000, 100.0, &c);
+        assert!(matches!(d, RebalanceDecision::Hold { .. }), "below: {d:?}");
+        // Above range.
+        let d = should_rebalance(2000, 0, 1000, 100.0, &c);
+        assert!(matches!(d, RebalanceDecision::Hold { .. }), "above: {d:?}");
     }
 
     #[test]
